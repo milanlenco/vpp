@@ -121,6 +121,7 @@ typedef struct {
   ip4_address_t external_addr;
   u16 local_port;
   u16 external_port;
+  u8 addr_only;
 } snat_static_mapping_t;
 
 typedef struct {

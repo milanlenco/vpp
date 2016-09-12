@@ -198,12 +198,13 @@ static void increment_v4_address (ip4_address_t * a)
  * @param e_addr External IPv4 address.
  * @param l_port Local port number.
  * @param e_port External port number.
+ * @param addr_only If 0 address port and pair mapping, otherwise address only.
  * @param is_add If 0 delete static mapping, otherwise add.
  *
  * @returns
  */
 int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
-                            u16 l_port, u16 e_port, int is_add)
+                            u16 l_port, u16 e_port, int addr_only, int is_add)
 {
   snat_main_t * sm = &snat_main;
   snat_static_mapping_t *m;
@@ -212,27 +213,30 @@ int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
   snat_address_t *a = 0;
   int i;
 
-  /* Find external address in allocated addresses and reserve port */
-  for (i = 0; i < vec_len (sm->addresses); i++)
+  /* Find external address in allocated addresses and reserve port for
+     address and port pair mapping */
+  if (!addr_only)
     {
-      if (sm->addresses[i].addr.as_u32 == e_addr.as_u32)
+      for (i = 0; i < vec_len (sm->addresses); i++)
         {
-          a = sm->addresses + i;
-          /* External port must be unused */
-          if (clib_bitmap_get (a->busy_port_bitmap, e_port))
-            return VNET_API_ERROR_INVALID_VALUE;
-          a->busy_port_bitmap = clib_bitmap_set (a->busy_port_bitmap, e_port,
-                                                 1);
-          if (e_port > 1024)
-            a->busy_ports++;
+          if (sm->addresses[i].addr.as_u32 == e_addr.as_u32)
+            {
+              a = sm->addresses + i;
+              /* External port must be unused */
+              if (clib_bitmap_get (a->busy_port_bitmap, e_port))
+                return VNET_API_ERROR_INVALID_VALUE;
+              a->busy_port_bitmap = clib_bitmap_set (a->busy_port_bitmap,
+                                                     e_port, 1);
+              if (e_port > 1024)
+                a->busy_ports++;
 
-          break;
+              break;
+            }
         }
+      /* External address must be allocated */
+      if (!a)
+        return VNET_API_ERROR_NO_SUCH_ENTRY;
     }
-
-  /* External address must be allocated */
-  if (!a)
-    return VNET_API_ERROR_NO_SUCH_ENTRY;
 
   pool_get (sm->static_mappings, m);
   memset (m, 0, sizeof (*m));
@@ -240,6 +244,7 @@ int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
   m->local_port = l_port;
   m->external_addr = e_addr;
   m->external_port = e_port;
+  m->addr_only = addr_only;
 
   m_key.addr = l_addr;
   m_key.port = l_port;
@@ -382,11 +387,14 @@ vl_api_snat_add_static_mapping_t_handler
 
   memcpy (&local_addr.as_u8, mp->local_ip_address, 4);
   memcpy (&external_addr.as_u8, mp->external_ip_address, 4);
-  local_port = clib_net_to_host_u16 (mp->local_port);
-  external_port = clib_net_to_host_u16 (mp->external_port);
+  if (mp->addr_only == 0)
+    {
+      local_port = clib_net_to_host_u16 (mp->local_port);
+      external_port = clib_net_to_host_u16 (mp->external_port);
+    }
 
   rv = snat_add_static_mapping(local_addr, external_addr, local_port,
-                               external_port, mp->is_add);
+                               external_port, mp->addr_only, mp->is_add);
 
  send_reply:
   REPLY_MACRO (VL_API_SNAT_ADD_ADDRESS_RANGE_REPLY);
@@ -401,9 +409,12 @@ static void *vl_api_snat_add_static_mapping_t_print
   s = format (s, "local_addr %U external_addr %U ",
               format_ip4_address, mp->local_ip_address,
               format_ip4_address, mp->external_ip_address);
-  s = format (s, "local_port %d external_port %d ",
-              clib_net_to_host_u16 (mp->local_port),
-              clib_net_to_host_u16 (mp->external_port));
+  if (mp->addr_only == 0)
+    {
+      s = format (s, "local_port %d external_port %d ",
+                  clib_net_to_host_u16 (mp->local_port),
+                  clib_net_to_host_u16 (mp->external_port));
+    }
   FINISH;
 }
 
@@ -519,19 +530,29 @@ int snat_static_mapping_match (snat_main_t * sm,
   kv.key = m_key.as_u64;
 
   if (clib_bihash_search_8_8 (mapping_hash, &kv, &value))
-    return 1;
+    {
+      /* Try address only mapping */
+      m_key.port = 0;
+      kv.key = m_key.as_u64;
+      if (clib_bihash_search_8_8 (mapping_hash, &kv, &value))
+        return 1;
+    }
 
   m = pool_elt_at_index (sm->static_mappings, value.value);
 
   if (by_external)
     {
       mapping->addr = m->local_addr;
-      mapping->port = clib_host_to_net_u16 (m->local_port);
+      /* Address only mapping doesn't change port */
+      mapping->port = m->addr_only ? match.port
+        : clib_host_to_net_u16 (m->local_port);
     }
   else
     {
       mapping->addr = m->external_addr;
-      mapping->port = clib_host_to_net_u16 (m->external_port);
+      /* Address only mapping doesn't change port */
+      mapping->port = m->addr_only ? match.port
+        : clib_host_to_net_u16 (m->external_port);
     }
 
   return 0;
@@ -733,6 +754,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
   ip4_address_t l_addr, e_addr;
   u32 l_port = 0, e_port = 0;
   int is_add = 1;
+  int addr_only = 1;
   int rv;
 
   /* Get a line of input. */
@@ -743,12 +765,12 @@ add_static_mapping_command_fn (vlib_main_t * vm,
     {
       if (unformat (line_input, "local %U %u", unformat_ip4_address, &l_addr,
                     &l_port))
-        ;
+        addr_only = 0;
       else if (unformat (line_input, "local %U", unformat_ip4_address, &l_addr))
         ;
       else if (unformat (line_input, "external %U %u", unformat_ip4_address,
                          &e_addr, &e_port))
-        ;
+        addr_only = 0;
       else if (unformat (line_input, "external %U", unformat_ip4_address,
                          &e_addr))
         ;
@@ -761,7 +783,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
   unformat_free (line_input);
 
   rv = snat_add_static_mapping(l_addr, e_addr, (u16) l_port, (u16) e_port,
-                               is_add);
+                               addr_only, is_add);
 
   switch (rv)
     {
@@ -787,6 +809,8 @@ add_static_mapping_command_fn (vlib_main_t * vm,
  * external address 4.4.4.4 port 3606 use:
  *  vpp# snat add address 4.4.4.4
  *  vpp# snat add static mapping local 10.0.0.3 6303 external 4.4.4.4 3606
+ * To create static mapping between local and external address use:
+ *  vpp# snat add static mapping local 10.0.0.3 external 4.4.4.4
  * @cliexend
 ?*/
 VLIB_CLI_COMMAND (add_static_mapping_command, static) = {
@@ -946,9 +970,14 @@ u8 * format_snat_static_mapping (u8 * s, va_list * args)
 {
   snat_static_mapping_t *m = va_arg (*args, snat_static_mapping_t *);
 
-  s = format (s, "local %U:%d external %U:%d",
-              format_ip4_address, &m->local_addr, m->local_port,
-              format_ip4_address, &m->external_addr, m->external_port);
+  if (m->addr_only)
+      s = format (s, "local %U external %U",
+                  format_ip4_address, &m->local_addr,
+                  format_ip4_address, &m->external_addr);
+  else
+      s = format (s, "local %U:%d external %U:%d",
+                  format_ip4_address, &m->local_addr, m->local_port,
+                  format_ip4_address, &m->external_addr, m->external_port);
 
   return s;
 }

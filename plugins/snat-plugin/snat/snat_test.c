@@ -228,22 +228,23 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
   unformat_input_t * i = vam->input;
   f64 timeout;
   vl_api_snat_add_static_mapping_t * mp;
-  u8 args_set_n = 0;
+  u8 addr_set_n = 0;
   u8 is_add = 1;
+  u8 addr_only = 1;
   ip4_address_t local_addr, external_addr;
   u32 local_port = 0, external_port = 0;
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (i, "local_addr %U", unformat_ip4_address, &local_addr))
-        args_set_n++;
+        addr_set_n++;
       else if (unformat (i, "external_addr %U", unformat_ip4_address,
                          &external_addr))
-        args_set_n++;
+        addr_set_n++;
       else if (unformat (i, "local_port %u", &local_port))
-        args_set_n++;
+        addr_only = 0;
       else if (unformat (i, "external_port %u", &external_port))
-        args_set_n++;
+        addr_only = 0;
       else if (unformat (i, "del"))
         is_add = 0;
       else
@@ -253,7 +254,7 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
         }
     }
 
-  if (args_set_n != 4)
+  if (addr_set_n != 2)
     {
       errmsg ("local_addr and remote_addr required\n");
       return -99;
@@ -262,6 +263,7 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
   M(SNAT_ADD_STATIC_MAPPING, snat_add_static_mapping);
   mp->is_add = is_add;
   mp->is_ip4 = 1;
+  mp->addr_only = addr_only;
   mp->local_port = ntohs ((u16) local_port);
   mp->external_port = ntohs ((u16) external_port);
   memcpy (mp->local_ip_address, &local_addr, 4);

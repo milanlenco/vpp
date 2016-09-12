@@ -75,6 +75,7 @@ define snat_interface_add_del_feature_reply {
     @param context - sender context, to match reply w/ request
     @param is_add - 1 if add, 0 if delete
     @param is_ip4 - 1 if address type is IPv4
+    @param addr_only - 1 if address only mapping
     @param local_ip_address - local IP address
     @param external_ip_address - external IP address
     @param local_port - local port number
@@ -85,6 +86,7 @@ define snat_add_static_mapping {
   u32 context;
   u8 is_add;
   u8 is_ip4;
+  u8 addr_only;
   u8 local_ip_address[16];
   u8 external_ip_address[16];
   u16 local_port;
