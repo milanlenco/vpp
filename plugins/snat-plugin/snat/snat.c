@@ -214,8 +214,8 @@ int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
   int i;
 
   /* Find external address in allocated addresses and reserve port for
-     address and port pair mapping */
-  if (!addr_only)
+     address and port pair mapping when dynamic translations enabled */
+  if (!addr_only && !(sm->static_mapping_only))
     {
       for (i = 0; i < vec_len (sm->addresses); i++)
         {
@@ -277,6 +277,12 @@ vl_api_snat_add_address_range_t_handler
   if (mp->is_ip4 != 1)
     {
       rv = VNET_API_ERROR_UNIMPLEMENTED;
+      goto send_reply;
+    }
+
+  if (sm->static_mapping_only)
+    {
+      rv = VNET_API_ERROR_INVALID_ARGUMENT;
       goto send_reply;
     }
 
@@ -620,6 +626,10 @@ add_address_command_fn (vlib_main_t * vm,
   else
     return clib_error_return (0, "unknown input '%U'", format_unformat_error,
       input);
+  unformat_free (line_input);
+
+  if (sm->static_mapping_only)
+    return clib_error_return (0, "static mapping only mode");
 
   start_host_order = clib_host_to_net_u32 (start_addr.as_u32);
   end_host_order = clib_host_to_net_u32 (end_addr.as_u32);
@@ -691,6 +701,7 @@ snat_feature_command_fn (vlib_main_t * vm,
         return clib_error_return (0, "unknown input '%U'",
           format_unformat_error, input);
     }
+  unformat_free (line_input);
 
   if (vec_len (inside_sw_if_indices))
     {
@@ -833,6 +844,8 @@ snat_config (vlib_main_t * vm, unformat_input_t * input)
   u32 inside_vrf_id = 0;
   u32 static_mapping_buckets = 1024;
   u32 static_mapping_memory_size = 64<<20;
+  u8 static_mapping_only = 0;
+  u8 static_mapping_connection_tracking = 0;
 
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
     {
@@ -854,6 +867,12 @@ snat_config (vlib_main_t * vm, unformat_input_t * input)
       else if (unformat (input, "inside VRF id %d",
                          &inside_vrf_id))
         ;
+      else if (unformat (input, "static mapping only"))
+        {
+          static_mapping_only = 1;
+          if (unformat (input, "connection tracking"))
+            static_mapping_connection_tracking = 1;
+        }
       else 
 	return clib_error_return (0, "unknown input '%U'",
 				  format_unformat_error, input);
@@ -867,16 +886,21 @@ snat_config (vlib_main_t * vm, unformat_input_t * input)
   sm->max_translations_per_user = max_translations_per_user;
   sm->outside_vrf_id = outside_vrf_id;
   sm->inside_vrf_id = inside_vrf_id;
+  sm->static_mapping_only = static_mapping_only;
+  sm->static_mapping_connection_tracking = static_mapping_connection_tracking;
 
-  clib_bihash_init_8_8 (&sm->in2out, "in2out", translation_buckets,
-                        translation_memory_size);
-  
-  clib_bihash_init_8_8 (&sm->out2in, "out2in", translation_buckets,
-                        translation_memory_size);
+  if (!static_mapping_only ||
+      (static_mapping_only && static_mapping_connection_tracking))
+    {
+      clib_bihash_init_8_8 (&sm->in2out, "in2out", translation_buckets,
+                            translation_memory_size);
 
-  clib_bihash_init_8_8 (&sm->user_hash, "users", user_buckets,
-                        user_memory_size);
+      clib_bihash_init_8_8 (&sm->out2in, "out2in", translation_buckets,
+                            translation_memory_size);
 
+      clib_bihash_init_8_8 (&sm->user_hash, "users", user_buckets,
+                            user_memory_size);
+    }
   clib_bihash_init_8_8 (&sm->static_mapping_by_local,
                         "static_mapping_by_local", static_mapping_buckets,
                         static_mapping_memory_size);
@@ -997,32 +1021,48 @@ show_snat_command_fn (vlib_main_t * vm,
   else if (unformat (input, "verbose"))
     verbose = 2;
 
-  vlib_cli_output (vm, "%d users, %d outside addresses, %d active sessions, "
-                   "%d static mappings",
-                   pool_elts (sm->users),
-                   vec_len (sm->addresses),
-                   pool_elts (sm->sessions),
-                   pool_elts (sm->static_mappings));
-  
-  if (verbose > 0)
+  if (sm->static_mapping_only && !(sm->static_mapping_connection_tracking))
     {
-      vlib_cli_output (vm, "%U", format_bihash_8_8, &sm->in2out,
-                       verbose - 1);
-      vlib_cli_output (vm, "%U", format_bihash_8_8, &sm->out2in,
-                       verbose - 1);
-      vlib_cli_output (vm, "%d list pool elements",
-                       pool_elts (sm->list_pool));
+      vlib_cli_output (vm, "%d static mappings",
+                       pool_elts (sm->static_mappings));
 
-      pool_foreach (u, sm->users,
-      ({
-        vlib_cli_output (vm, "%U", format_snat_user, sm, u, verbose - 1);
-      }));
+      if (verbose > 0)
+        {
+          pool_foreach (m, sm->static_mappings,
+          ({
+            vlib_cli_output (vm, "%U", format_snat_static_mapping, m);
+          }));
+        }
+    }
+  else
+    {
+      vlib_cli_output (vm, "%d users, %d outside addresses, %d active sessions,"
+                       " %d static mappings",
+                       pool_elts (sm->users),
+                       vec_len (sm->addresses),
+                       pool_elts (sm->sessions),
+                       pool_elts (sm->static_mappings));
 
-      vlib_cli_output (vm, "static mappings:");
-      pool_foreach (m, sm->static_mappings,
-      ({
-        vlib_cli_output (vm, "%U", format_snat_static_mapping, m);
-      }));
+      if (verbose > 0)
+        {
+          vlib_cli_output (vm, "%U", format_bihash_8_8, &sm->in2out,
+                           verbose - 1);
+          vlib_cli_output (vm, "%U", format_bihash_8_8, &sm->out2in,
+                           verbose - 1);
+          vlib_cli_output (vm, "%d list pool elements",
+                           pool_elts (sm->list_pool));
+
+          pool_foreach (u, sm->users,
+          ({
+            vlib_cli_output (vm, "%U", format_snat_user, sm, u, verbose - 1);
+          }));
+
+          vlib_cli_output (vm, "static mappings:");
+          pool_foreach (m, sm->static_mappings,
+          ({
+            vlib_cli_output (vm, "%U", format_snat_static_mapping, m);
+          }));
+        }
     }
 
   return 0;

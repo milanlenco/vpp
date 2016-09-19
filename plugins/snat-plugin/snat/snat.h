@@ -161,6 +161,8 @@ typedef struct {
   u32 rx_feature_out2in;
 
   /* Config parameters */
+  u8 static_mapping_only;
+  u8 static_mapping_connection_tracking;
   u32 translation_buckets;
   u32 translation_memory_size;
   u32 user_buckets;
@@ -169,6 +171,7 @@ typedef struct {
   u32 outside_vrf_id;
   u32 outside_fib_index;
   u32 inside_vrf_id;
+  u32 inside_fib_index;
 
   /* API message ID base */
   u16 msg_id_base;
