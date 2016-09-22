@@ -159,6 +159,8 @@ typedef struct {
   /* ip4 feature path indices */
   u32 rx_feature_in2out;
   u32 rx_feature_out2in;
+  u32 rx_feature_in2out_fast;
+  u32 rx_feature_out2in_fast;
 
   /* Config parameters */
   u8 static_mapping_only;
@@ -188,6 +190,8 @@ typedef struct {
 extern snat_main_t snat_main;
 extern vlib_node_registration_t snat_in2out_node;
 extern vlib_node_registration_t snat_out2in_node;
+extern vlib_node_registration_t snat_in2out_fast_node;
+extern vlib_node_registration_t snat_out2in_fast_node;
 
 void snat_free_outside_address_and_port (snat_main_t * sm, 
                                          snat_session_key_t * k, 

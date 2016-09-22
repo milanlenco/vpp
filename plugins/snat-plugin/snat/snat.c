@@ -88,6 +88,17 @@ VNET_IP4_UNICAST_FEATURE_INIT (ip4_snat_out2in, static) = {
   .runs_before = (char *[]){"ip4-lookup", 0},
   .feature_index = &snat_main.rx_feature_out2in,
 };
+VNET_IP4_UNICAST_FEATURE_INIT (ip4_snat_in2out_fast, static) = {
+  .node_name = "snat-in2out-fast",
+  .runs_before = (char *[]){"snat-out2in-fast", 0},
+  .feature_index = &snat_main.rx_feature_in2out_fast,
+};
+VNET_IP4_UNICAST_FEATURE_INIT (ip4_snat_out2in_fast, static) = {
+  .node_name = "snat-out2in-fast",
+  .runs_before = (char *[]){"ip4-lookup", 0},
+  .feature_index = &snat_main.rx_feature_out2in_fast,
+};
+
 
 /* 
  * This routine exists to convince the vlib plugin framework that
@@ -342,8 +353,12 @@ vl_api_snat_interface_add_del_feature_t_handler
 
   VALIDATE_SW_IF_INDEX(mp);
 
-  feature_index = mp->is_inside ? sm->rx_feature_in2out
-    : sm->rx_feature_out2in;
+  if (sm->static_mapping_only && !(sm->static_mapping_connection_tracking))
+    feature_index = mp->is_inside ?  sm->rx_feature_in2out_fast
+      : sm->rx_feature_out2in_fast;
+  else
+    feature_index = mp->is_inside ? sm->rx_feature_in2out
+      : sm->rx_feature_out2in;
 
   ci = rx_cm->config_index_by_sw_if_index[sw_if_index];
   ci = (is_del
@@ -705,7 +720,10 @@ snat_feature_command_fn (vlib_main_t * vm,
 
   if (vec_len (inside_sw_if_indices))
     {
-      feature_index = sm->rx_feature_in2out;
+      if (sm->static_mapping_only && !(sm->static_mapping_connection_tracking))
+        feature_index = sm->rx_feature_in2out_fast;
+      else
+        feature_index = sm->rx_feature_in2out;
 
       for (i = 0; i < vec_len(inside_sw_if_indices); i++)
         {
@@ -725,7 +743,10 @@ snat_feature_command_fn (vlib_main_t * vm,
 
   if (vec_len (outside_sw_if_indices))
     {
-      feature_index = sm->rx_feature_out2in;
+      if (sm->static_mapping_only && !(sm->static_mapping_connection_tracking))
+        feature_index = sm->rx_feature_out2in_fast;
+      else
+        feature_index = sm->rx_feature_out2in;
 
       for (i = 0; i < vec_len(outside_sw_if_indices); i++)
         {
