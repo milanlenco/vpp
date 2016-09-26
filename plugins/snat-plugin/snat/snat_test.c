@@ -232,7 +232,7 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
   u8 is_add = 1;
   u8 addr_only = 1;
   ip4_address_t local_addr, external_addr;
-  u32 local_port = 0, external_port = 0;
+  u32 local_port = 0, external_port = 0, vrf_id = ~0;
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -245,6 +245,8 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
         addr_only = 0;
       else if (unformat (i, "external_port %u", &external_port))
         addr_only = 0;
+      else if (unformat (i, "vrf %u", &vrf_id))
+        ;
       else if (unformat (i, "del"))
         is_add = 0;
       else
@@ -266,6 +268,7 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
   mp->addr_only = addr_only;
   mp->local_port = ntohs ((u16) local_port);
   mp->external_port = ntohs ((u16) external_port);
+  mp->vrf_id = ntohl (vrf_id);
   memcpy (mp->local_ip_address, &local_addr, 4);
   memcpy (mp->external_ip_address, &external_addr, 4);
 
@@ -283,7 +286,7 @@ _(snat_add_address_range, "<start-addr> [- <end-addr]")          \
 _(snat_interface_add_del_feature,                                \
   "<intfc> | sw_if_index <id> [in] [out] [del]")                 \
 _(snat_add_static_mapping, "local_addr <ip> external_addr <ip> " \
-  "[local_port <n>] [external_port <n>] [del]")
+  "[local_port <n>] [external_port <n>] [vrf <table-id>] [del]")
 
 void vat_api_hookup (vat_main_t *vam)
 {

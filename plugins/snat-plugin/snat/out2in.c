@@ -62,7 +62,6 @@ vlib_node_registration_t snat_out2in_fast_node;
 _(UNSUPPORTED_PROTOCOL, "Unsupported protocol")         \
 _(OUT2IN_PACKETS, "Good out2in packets processed")      \
 _(BAD_ICMP_TYPE, "icmp type not echo-reply")            \
-_(BAD_INSIDE_FIB, "inside VRF ID not found")            \
 _(NO_TRANSLATION, "No translation")
   
 typedef enum {
@@ -110,19 +109,9 @@ create_session_for_static_mapping (snat_main_t *sm,
   clib_bihash_kv_8_8_t kv0, value0;
   dlist_elt_t * per_user_translation_list_elt;
   dlist_elt_t * per_user_list_head_elt;
-  u32 inside_fib_index;
-  uword * p;
-
-  p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->inside_vrf_id);
-  if (! p)
-    {
-      b0->error = node->errors[SNAT_OUT2IN_ERROR_BAD_INSIDE_FIB];
-      return 0;
-    }
-  inside_fib_index = p[0];
 
   user_key.addr = in2out.addr;
-  user_key.fib_index = inside_fib_index;
+  user_key.fib_index = in2out.fib_index;
   kv0.key = user_key.as_u64;
 
   /* Ever heard of the "user" = inside ip4 address before? */
@@ -172,7 +161,6 @@ create_session_for_static_mapping (snat_main_t *sm,
   s->in2out = in2out;
   s->out2in = out2in;
   s->in2out.protocol = out2in.protocol;
-  s->in2out.fib_index = inside_fib_index;
 
   /* Add to translation hashes */
   kv0.key = s->in2out.as_u64;
@@ -417,7 +405,7 @@ snat_out2in_node_fn (vlib_main_t * vm,
           old_addr0 = ip0->dst_address.as_u32;
           ip0->dst_address = s0->in2out.addr;
           new_addr0 = ip0->dst_address.as_u32;
-          vnet_buffer(b0)->sw_if_index[VLIB_TX] = s0->out2in.fib_index;
+          vnet_buffer(b0)->sw_if_index[VLIB_TX] = s0->in2out.fib_index;
 
           sum0 = ip0->checksum;
           sum0 = ip_csum_update (sum0, old_addr0, new_addr0,
@@ -536,7 +524,7 @@ snat_out2in_node_fn (vlib_main_t * vm,
           old_addr1 = ip1->dst_address.as_u32;
           ip1->dst_address = s1->in2out.addr;
           new_addr1 = ip1->dst_address.as_u32;
-          vnet_buffer(b1)->sw_if_index[VLIB_TX] = s1->out2in.fib_index;
+          vnet_buffer(b1)->sw_if_index[VLIB_TX] = s1->in2out.fib_index;
 
           sum1 = ip1->checksum;
           sum1 = ip_csum_update (sum1, old_addr1, new_addr1,
@@ -690,7 +678,7 @@ snat_out2in_node_fn (vlib_main_t * vm,
           old_addr0 = ip0->dst_address.as_u32;
           ip0->dst_address = s0->in2out.addr;
           new_addr0 = ip0->dst_address.as_u32;
-          vnet_buffer(b0)->sw_if_index[VLIB_TX] = s0->out2in.fib_index;
+          vnet_buffer(b0)->sw_if_index[VLIB_TX] = s0->in2out.fib_index;
 
           sum0 = ip0->checksum;
           sum0 = ip_csum_update (sum0, old_addr0, new_addr0,
@@ -828,7 +816,7 @@ static inline u32 icmp_out2in_fast (snat_main_t *sm,
 
   new_addr0 = sm0.addr.as_u32;
   new_id0 = sm0.port;
-  vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0;
+  vnet_buffer(b0)->sw_if_index[VLIB_TX] = sm0.fib_index;
 
   old_addr0 = ip0->dst_address.as_u32;
   ip0->dst_address.as_u32 = new_addr0;
@@ -960,7 +948,7 @@ snat_out2in_fast_node_fn (vlib_main_t * vm,
 
           new_addr0 = sm0.addr.as_u32;
           new_port0 = sm0.port;
-          vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0;
+          vnet_buffer(b0)->sw_if_index[VLIB_TX] = sm0.fib_index;
           old_addr0 = ip0->dst_address.as_u32;
           ip0->dst_address.as_u32 = new_addr0;
 
@@ -1061,7 +1049,7 @@ snat_out2in_fast_node_fn (vlib_main_t * vm,
 
           new_addr1 = sm1.addr.as_u32;
           new_port1 = sm1.port;
-          vnet_buffer(b1)->sw_if_index[VLIB_TX] = ~0;
+          vnet_buffer(b1)->sw_if_index[VLIB_TX] = sm1.fib_index;
           old_addr1 = ip1->dst_address.as_u32;
           ip1->dst_address.as_u32 = new_addr1;
 
@@ -1194,7 +1182,7 @@ snat_out2in_fast_node_fn (vlib_main_t * vm,
 
           new_addr0 = sm0.addr.as_u32;
           new_port0 = sm0.port;
-          vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0;
+          vnet_buffer(b0)->sw_if_index[VLIB_TX] = sm0.fib_index;
           old_addr0 = ip0->dst_address.as_u32;
           ip0->dst_address.as_u32 = new_addr0;
 

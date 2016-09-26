@@ -122,6 +122,8 @@ typedef struct {
   u16 local_port;
   u16 external_port;
   u8 addr_only;
+  u32 vrf_id;
+  u32 fib_index;
 } snat_static_mapping_t;
 
 typedef struct {

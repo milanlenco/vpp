@@ -1042,7 +1042,7 @@ static inline u32 icmp_in2out_static_map (snat_main_t *sm,
 
   new_addr0 = sm0.addr.as_u32;
   new_id0 = sm0.port;
-  vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0;  
+  vnet_buffer(b0)->sw_if_index[VLIB_TX] = sm0.fib_index;  
   old_addr0 = ip0->src_address.as_u32;
   ip0->src_address.as_u32 = new_addr0;
   
@@ -1184,7 +1184,7 @@ snat_in2out_fast_static_map_fn (vlib_main_t * vm,
 
           new_addr0 = sm0.addr.as_u32;
           new_port0 = sm0.port;
-          vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0;
+          vnet_buffer(b0)->sw_if_index[VLIB_TX] = sm0.fib_index;
           old_addr0 = ip0->src_address.as_u32;
           ip0->src_address.as_u32 = new_addr0;
 
@@ -1292,7 +1292,7 @@ snat_in2out_fast_static_map_fn (vlib_main_t * vm,
 
           new_addr1 = sm1.addr.as_u32;
           new_port1 = sm1.port;
-          vnet_buffer(b1)->sw_if_index[VLIB_TX] = ~0;
+          vnet_buffer(b1)->sw_if_index[VLIB_TX] = sm1.fib_index;
           old_addr1 = ip1->src_address.as_u32;
           ip1->src_address.as_u32 = new_addr1;
 
@@ -1433,7 +1433,7 @@ snat_in2out_fast_static_map_fn (vlib_main_t * vm,
 
           new_addr0 = sm0.addr.as_u32;
           new_port0 = sm0.port;
-          vnet_buffer(b0)->sw_if_index[VLIB_TX] = ~0;
+          vnet_buffer(b0)->sw_if_index[VLIB_TX] = sm0.fib_index;
           old_addr0 = ip0->src_address.as_u32;
           ip0->src_address.as_u32 = new_addr0;
 

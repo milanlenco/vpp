@@ -209,20 +209,58 @@ static void increment_v4_address (ip4_address_t * a)
  * @param e_addr External IPv4 address.
  * @param l_port Local port number.
  * @param e_port External port number.
+ * @param vrf_id VRF ID.
  * @param addr_only If 0 address port and pair mapping, otherwise address only.
  * @param is_add If 0 delete static mapping, otherwise add.
  *
  * @returns
  */
 int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
-                            u16 l_port, u16 e_port, int addr_only, int is_add)
+                            u16 l_port, u16 e_port, u32 vrf_id, int addr_only,
+                            int is_add)
 {
   snat_main_t * sm = &snat_main;
   snat_static_mapping_t *m;
   snat_static_mapping_key_t m_key;
   clib_bihash_kv_8_8_t kv;
   snat_address_t *a = 0;
+  u32 fib_index = ~0;
+  uword * p;
   int i;
+
+  /* Convert VRF id to FIB index */
+  if (vrf_id != ~0)
+    {
+      p = hash_get (sm->ip4_main->fib_index_by_table_id, vrf_id);
+      if (!p)
+        return VNET_API_ERROR_NO_SUCH_FIB;
+      fib_index = p[0];
+    }
+  /* If not specified use inside VRF id from SNAT plugin startup config */
+  else
+    {
+      if (sm->inside_fib_index == ~0)
+        {
+          p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->inside_vrf_id);
+          if (!p)
+            return VNET_API_ERROR_NO_SUCH_FIB;
+          fib_index = p[0];
+          sm->inside_fib_index = fib_index;
+        }
+      else
+        fib_index = sm->inside_fib_index;
+
+      vrf_id = sm->inside_vrf_id;
+    }
+
+  /* If outside FIB index is not resolved yet */
+  if (sm->outside_fib_index == ~0)
+    {
+      p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->outside_vrf_id);
+      if (!p)
+        return VNET_API_ERROR_NO_SUCH_FIB;
+      sm->outside_fib_index = p[0];
+    }
 
   /* Find external address in allocated addresses and reserve port for
      address and port pair mapping when dynamic translations enabled */
@@ -256,6 +294,8 @@ int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
   m->external_addr = e_addr;
   m->external_port = e_port;
   m->addr_only = addr_only;
+  m->vrf_id = vrf_id;
+  m->fib_index = fib_index;
 
   m_key.addr = l_addr;
   m_key.port = l_port;
@@ -415,7 +455,8 @@ vl_api_snat_add_static_mapping_t_handler
     }
 
   rv = snat_add_static_mapping(local_addr, external_addr, local_port,
-                               external_port, mp->addr_only, mp->is_add);
+                               external_port, mp->vrf_id, mp->addr_only,
+                               mp->is_add);
 
  send_reply:
   REPLY_MACRO (VL_API_SNAT_ADD_ADDRESS_RANGE_REPLY);
@@ -430,12 +471,15 @@ static void *vl_api_snat_add_static_mapping_t_print
   s = format (s, "local_addr %U external_addr %U ",
               format_ip4_address, mp->local_ip_address,
               format_ip4_address, mp->external_ip_address);
+
   if (mp->addr_only == 0)
-    {
-      s = format (s, "local_port %d external_port %d ",
-                  clib_net_to_host_u16 (mp->local_port),
-                  clib_net_to_host_u16 (mp->external_port));
-    }
+    s = format (s, "local_port %d external_port %d ",
+                clib_net_to_host_u16 (mp->local_port),
+                clib_net_to_host_u16 (mp->external_port));
+
+  if (mp->vrf_id != ~0)
+    s = format (s, "vrf_id %d", clib_net_to_host_u32 (mp->vrf_id));
+    
   FINISH;
 }
 
@@ -567,6 +611,7 @@ int snat_static_mapping_match (snat_main_t * sm,
       /* Address only mapping doesn't change port */
       mapping->port = m->addr_only ? match.port
         : clib_host_to_net_u16 (m->local_port);
+      mapping->fib_index = m->fib_index;
     }
   else
     {
@@ -574,6 +619,7 @@ int snat_static_mapping_match (snat_main_t * sm,
       /* Address only mapping doesn't change port */
       mapping->port = m->addr_only ? match.port
         : clib_host_to_net_u16 (m->external_port);
+      mapping->fib_index = sm->outside_fib_index;
     }
 
   return 0;
@@ -784,7 +830,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
   unformat_input_t _line_input, *line_input = &_line_input;
   clib_error_t * error = 0;
   ip4_address_t l_addr, e_addr;
-  u32 l_port = 0, e_port = 0;
+  u32 l_port = 0, e_port = 0, vrf_id = ~0;
   int is_add = 1;
   int addr_only = 1;
   int rv;
@@ -806,6 +852,8 @@ add_static_mapping_command_fn (vlib_main_t * vm,
       else if (unformat (line_input, "external %U", unformat_ip4_address,
                          &e_addr))
         ;
+      else if (unformat (line_input, "vrf %u", &vrf_id))
+        ;
       else if (unformat (line_input, "del"))
         is_add = 0;
       else
@@ -815,7 +863,7 @@ add_static_mapping_command_fn (vlib_main_t * vm,
   unformat_free (line_input);
 
   rv = snat_add_static_mapping(l_addr, e_addr, (u16) l_port, (u16) e_port,
-                               addr_only, is_add);
+                               vrf_id, addr_only, is_add);
 
   switch (rv)
     {
@@ -825,6 +873,8 @@ add_static_mapping_command_fn (vlib_main_t * vm,
     case VNET_API_ERROR_NO_SUCH_ENTRY:
       return clib_error_return (0, "External addres must be allocated.");
       break;
+    case VNET_API_ERROR_NO_SUCH_FIB:
+      return clib_error_return (0, "No such VRF id.");
     default:
       break;
     }
@@ -839,8 +889,10 @@ add_static_mapping_command_fn (vlib_main_t * vm,
  * to to the local network host.
  * To create static mapping between local host address 10.0.0.3 port 6303 and
  * external address 4.4.4.4 port 3606 use:
- *  vpp# snat add address 4.4.4.4
  *  vpp# snat add static mapping local 10.0.0.3 6303 external 4.4.4.4 3606
+ * If not runnig "static mapping only" only or if runnig "static mapping only
+ * connection tracking" use before:
+ *  vpp# snat add address 4.4.4.4
  * To create static mapping between local and external address use:
  *  vpp# snat add static mapping local 10.0.0.3 external 4.4.4.4
  * @cliexend
@@ -849,7 +901,7 @@ VLIB_CLI_COMMAND (add_static_mapping_command, static) = {
   .path = "snat add static mapping",
   .function = add_static_mapping_command_fn,
   .short_help =
-    "snat add static mapping local <addr> [<port>] external <addr> [<port>] [del]",
+    "snat add static mapping local <addr> [<port>] external <addr> [<port>] [vrf <table-id>] [del]",
 };
 
 static clib_error_t *
@@ -906,7 +958,9 @@ snat_config (vlib_main_t * vm, unformat_input_t * input)
   sm->user_memory_size = user_memory_size;
   sm->max_translations_per_user = max_translations_per_user;
   sm->outside_vrf_id = outside_vrf_id;
+  sm->outside_fib_index = ~0;
   sm->inside_vrf_id = inside_vrf_id;
+  sm->inside_fib_index = ~0;
   sm->static_mapping_only = static_mapping_only;
   sm->static_mapping_connection_tracking = static_mapping_connection_tracking;
 
@@ -1016,13 +1070,15 @@ u8 * format_snat_static_mapping (u8 * s, va_list * args)
   snat_static_mapping_t *m = va_arg (*args, snat_static_mapping_t *);
 
   if (m->addr_only)
-      s = format (s, "local %U external %U",
+      s = format (s, "local %U external %U vrf %d",
                   format_ip4_address, &m->local_addr,
-                  format_ip4_address, &m->external_addr);
+                  format_ip4_address, &m->external_addr,
+                  m->vrf_id);
   else
-      s = format (s, "local %U:%d external %U:%d",
+      s = format (s, "local %U:%d external %U:%d vrf %d",
                   format_ip4_address, &m->local_addr, m->local_port,
-                  format_ip4_address, &m->external_addr, m->external_port);
+                  format_ip4_address, &m->external_addr, m->external_port,
+                  m->vrf_id);
 
   return s;
 }
@@ -1041,6 +1097,19 @@ show_snat_command_fn (vlib_main_t * vm,
     verbose = 1;
   else if (unformat (input, "verbose"))
     verbose = 2;
+
+  if (sm->static_mapping_only)
+    {
+      if (sm->static_mapping_connection_tracking)
+        vlib_cli_output (vm, "SNAT mode: static mapping only connection "
+                         "tracking");
+      else
+        vlib_cli_output (vm, "SNAT mode: static mapping only");
+    }
+  else
+    {
+      vlib_cli_output (vm, "SNAT mode: dynamic translations enabled");
+    }
 
   if (sm->static_mapping_only && !(sm->static_mapping_connection_tracking))
     {
@@ -1078,11 +1147,14 @@ show_snat_command_fn (vlib_main_t * vm,
             vlib_cli_output (vm, "%U", format_snat_user, sm, u, verbose - 1);
           }));
 
-          vlib_cli_output (vm, "static mappings:");
-          pool_foreach (m, sm->static_mappings,
-          ({
-            vlib_cli_output (vm, "%U", format_snat_static_mapping, m);
-          }));
+          if (pool_elts (sm->static_mappings))
+            {
+              vlib_cli_output (vm, "static mappings:");
+              pool_foreach (m, sm->static_mappings,
+              ({
+                vlib_cli_output (vm, "%U", format_snat_static_mapping, m);
+              }));
+            }
         }
     }
 
