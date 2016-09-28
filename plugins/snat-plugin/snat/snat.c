@@ -222,93 +222,214 @@ int snat_add_static_mapping(ip4_address_t l_addr, ip4_address_t e_addr,
   snat_main_t * sm = &snat_main;
   snat_static_mapping_t *m;
   snat_static_mapping_key_t m_key;
-  clib_bihash_kv_8_8_t kv;
+  clib_bihash_kv_8_8_t kv, value;
   snat_address_t *a = 0;
   u32 fib_index = ~0;
   uword * p;
   int i;
 
-  /* Convert VRF id to FIB index */
-  if (vrf_id != ~0)
-    {
-      p = hash_get (sm->ip4_main->fib_index_by_table_id, vrf_id);
-      if (!p)
-        return VNET_API_ERROR_NO_SUCH_FIB;
-      fib_index = p[0];
-    }
-  /* If not specified use inside VRF id from SNAT plugin startup config */
+  m_key.addr = e_addr;
+  m_key.port = addr_only ? 0 : e_port;
+  m_key.pad = 0;
+  kv.key = m_key.as_u64;
+  if (clib_bihash_search_8_8 (&sm->static_mapping_by_external, &kv, &value))
+    m = 0;
   else
+    m = pool_elt_at_index (sm->static_mappings, value.value);
+
+  if (is_add)
     {
-      if (sm->inside_fib_index == ~0)
+      if (m)
+        return VNET_API_ERROR_VALUE_EXIST;
+
+      /* Convert VRF id to FIB index */
+      if (vrf_id != ~0)
         {
-          p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->inside_vrf_id);
+          p = hash_get (sm->ip4_main->fib_index_by_table_id, vrf_id);
           if (!p)
             return VNET_API_ERROR_NO_SUCH_FIB;
           fib_index = p[0];
-          sm->inside_fib_index = fib_index;
         }
+      /* If not specified use inside VRF id from SNAT plugin startup config */
       else
-        fib_index = sm->inside_fib_index;
-
-      vrf_id = sm->inside_vrf_id;
-    }
-
-  /* If outside FIB index is not resolved yet */
-  if (sm->outside_fib_index == ~0)
-    {
-      p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->outside_vrf_id);
-      if (!p)
-        return VNET_API_ERROR_NO_SUCH_FIB;
-      sm->outside_fib_index = p[0];
-    }
-
-  /* Find external address in allocated addresses and reserve port for
-     address and port pair mapping when dynamic translations enabled */
-  if (!addr_only && !(sm->static_mapping_only))
-    {
-      for (i = 0; i < vec_len (sm->addresses); i++)
         {
-          if (sm->addresses[i].addr.as_u32 == e_addr.as_u32)
+          if (sm->inside_fib_index == ~0)
             {
-              a = sm->addresses + i;
-              /* External port must be unused */
-              if (clib_bitmap_get (a->busy_port_bitmap, e_port))
-                return VNET_API_ERROR_INVALID_VALUE;
-              a->busy_port_bitmap = clib_bitmap_set (a->busy_port_bitmap,
-                                                     e_port, 1);
-              if (e_port > 1024)
-                a->busy_ports++;
+              p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->inside_vrf_id);
+              if (!p)
+                return VNET_API_ERROR_NO_SUCH_FIB;
+              fib_index = p[0];
+              sm->inside_fib_index = fib_index;
+            }
+          else
+            fib_index = sm->inside_fib_index;
 
-              break;
+          vrf_id = sm->inside_vrf_id;
+        }
+
+      /* If outside FIB index is not resolved yet */
+      if (sm->outside_fib_index == ~0)
+        {
+          p = hash_get (sm->ip4_main->fib_index_by_table_id, sm->outside_vrf_id);
+          if (!p)
+            return VNET_API_ERROR_NO_SUCH_FIB;
+          sm->outside_fib_index = p[0];
+        }
+
+      /* Find external address in allocated addresses and reserve port for
+         address and port pair mapping when dynamic translations enabled */
+      if (!addr_only && !(sm->static_mapping_only))
+        {
+          for (i = 0; i < vec_len (sm->addresses); i++)
+            {
+              if (sm->addresses[i].addr.as_u32 == e_addr.as_u32)
+                {
+                  a = sm->addresses + i;
+                  /* External port must be unused */
+                  if (clib_bitmap_get (a->busy_port_bitmap, e_port))
+                    return VNET_API_ERROR_INVALID_VALUE;
+                  a->busy_port_bitmap = clib_bitmap_set (a->busy_port_bitmap,
+                                                         e_port, 1);
+                  if (e_port > 1024)
+                    a->busy_ports++;
+
+                  break;
+                }
+            }
+          /* External address must be allocated */
+          if (!a)
+            return VNET_API_ERROR_NO_SUCH_ENTRY;
+        }
+
+      pool_get (sm->static_mappings, m);
+      memset (m, 0, sizeof (*m));
+      m->local_addr = l_addr;
+      m->external_addr = e_addr;
+      m->addr_only = addr_only;
+      m->vrf_id = vrf_id;
+      m->fib_index = fib_index;
+      if (!addr_only)
+        {
+          m->local_port = l_port;
+          m->external_port = e_port;
+        }
+
+      m_key.addr = m->local_addr;
+      m_key.port = m->local_port;
+      m_key.pad = 0;
+      kv.key = m_key.as_u64;
+      kv.value = m - sm->static_mappings;
+      clib_bihash_add_del_8_8(&sm->static_mapping_by_local, &kv, 1);
+
+      m_key.addr = m->external_addr;
+      m_key.port = m->external_port;
+      kv.key = m_key.as_u64;
+      kv.value = m - sm->static_mappings;
+      clib_bihash_add_del_8_8(&sm->static_mapping_by_external, &kv, 1);
+    }
+  else
+    {
+      if (!m)
+        return VNET_API_ERROR_NO_SUCH_ENTRY;
+
+      /* Free external address port */
+      if (!addr_only && !(sm->static_mapping_only))
+        {
+          for (i = 0; i < vec_len (sm->addresses); i++)
+            {
+              if (sm->addresses[i].addr.as_u32 == e_addr.as_u32)
+                {
+                  a = sm->addresses + i;
+                  a->busy_port_bitmap = clib_bitmap_set (a->busy_port_bitmap,
+                                                         e_port, 0);
+                  a->busy_ports--;
+
+                  break;
+                }
             }
         }
-      /* External address must be allocated */
-      if (!a)
-        return VNET_API_ERROR_NO_SUCH_ENTRY;
+
+      m_key.addr = m->local_addr;
+      m_key.port = m->local_port;
+      m_key.pad = 0;
+      kv.key = m_key.as_u64;
+      clib_bihash_add_del_8_8(&sm->static_mapping_by_local, &kv, 0);
+
+      m_key.addr = m->external_addr;
+      m_key.port = m->external_port;
+      kv.key = m_key.as_u64;
+      clib_bihash_add_del_8_8(&sm->static_mapping_by_external, &kv, 0);
+
+      /* Delete session(s) for static mapping if exist */
+      if (!(sm->static_mapping_only) ||
+          (sm->static_mapping_only && sm->static_mapping_connection_tracking))
+        {
+          snat_user_key_t u_key;
+          snat_user_t *u;
+          dlist_elt_t * head, * elt;
+          u32 elt_index, head_index;
+          u32 ses_index;
+          snat_session_t * s;
+
+          u_key.addr = m->local_addr;
+          u_key.fib_index = m->fib_index;
+          kv.key = u_key.as_u64;
+          if (!clib_bihash_search_8_8 (&sm->user_hash, &kv, &value))
+            {
+              u = pool_elt_at_index (sm->users, value.value);
+              if (u->nstaticsessions)
+                {
+                  head_index = u->sessions_per_user_list_head_index;
+                  head = pool_elt_at_index (sm->list_pool, head_index);
+                  elt_index = head->next;
+                  elt = pool_elt_at_index (sm->list_pool, elt_index);
+                  ses_index = elt->value;
+                  while (ses_index != ~0)
+                    {
+                      s =  pool_elt_at_index (sm->sessions, ses_index);
+
+                      if (!addr_only)
+                        {
+                          if ((s->out2in.addr.as_u32 != e_addr.as_u32) &&
+                              (clib_net_to_host_u16 (s->out2in.port) != e_port))
+                            continue;
+                        }
+                      value.key = s->in2out.as_u64;
+                      clib_bihash_add_del_8_8 (&sm->in2out, &value, 0);
+                      value.key = s->out2in.as_u64;
+                      clib_bihash_add_del_8_8 (&sm->out2in, &value, 0);
+                      pool_put (sm->sessions, s);
+
+                      if (!addr_only)
+                        break;
+
+                      elt_index = elt->next;
+                      elt = pool_elt_at_index (sm->list_pool, elt_index);
+                      ses_index = elt->value;
+                    }
+                  if (addr_only)
+                    {
+                      while ((elt_index = clib_dlist_remove_head(sm->list_pool, head_index)) != ~0)
+                        pool_put_index (sm->list_pool, elt_index);
+                      pool_put (sm->users, u);
+                      clib_bihash_add_del_8_8 (&sm->user_hash, &kv, 0);
+                    }
+                  else
+                    {
+                      if (ses_index != ~0)
+                        {
+                          clib_dlist_remove (sm->list_pool, elt_index);
+                          pool_put (sm->list_pool, elt);
+                          u->nstaticsessions--;
+                        }
+                    }
+                }
+            }
+        }
+
+      /* Delete static mapping from pool */
+      pool_put (sm->static_mappings, m);
     }
-
-  pool_get (sm->static_mappings, m);
-  memset (m, 0, sizeof (*m));
-  m->local_addr = l_addr;
-  m->local_port = l_port;
-  m->external_addr = e_addr;
-  m->external_port = e_port;
-  m->addr_only = addr_only;
-  m->vrf_id = vrf_id;
-  m->fib_index = fib_index;
-
-  m_key.addr = l_addr;
-  m_key.port = l_port;
-  m_key.pad = 0;
-  kv.key = m_key.as_u64;
-  kv.value = m - sm->static_mappings;
-  clib_bihash_add_del_8_8(&sm->static_mapping_by_local, &kv, 1);
-
-  m_key.addr = e_addr;
-  m_key.port = e_port;
-  kv.key = m_key.as_u64;
-  kv.value = m - sm->static_mappings;
-  clib_bihash_add_del_8_8(&sm->static_mapping_by_external, &kv, 1);
 
   return 0;
 }
@@ -333,7 +454,7 @@ vl_api_snat_add_address_range_t_handler
 
   if (sm->static_mapping_only)
     {
-      rv = VNET_API_ERROR_INVALID_ARGUMENT;
+      rv = VNET_API_ERROR_FEATURE_DISABLED;
       goto send_reply;
     }
 
@@ -871,10 +992,15 @@ add_static_mapping_command_fn (vlib_main_t * vm,
       return clib_error_return (0, "External port already in use.");
       break;
     case VNET_API_ERROR_NO_SUCH_ENTRY:
-      return clib_error_return (0, "External addres must be allocated.");
+      if (is_add)
+        return clib_error_return (0, "External addres must be allocated.");
+      else
+        return clib_error_return (0, "Mapping not exist.");
       break;
     case VNET_API_ERROR_NO_SUCH_FIB:
       return clib_error_return (0, "No such VRF id.");
+    case VNET_API_ERROR_VALUE_EXIST:
+      return clib_error_return (0, "Mapping already exist.");
     default:
       break;
     }
