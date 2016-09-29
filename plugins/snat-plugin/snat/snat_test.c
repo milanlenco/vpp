@@ -86,7 +86,10 @@ foreach_standard_reply_retval_handler;
 _(SNAT_ADD_ADDRESS_RANGE_REPLY, snat_add_address_range_reply)   \
 _(SNAT_INTERFACE_ADD_DEL_FEATURE_REPLY,                         \
   snat_interface_add_del_feature_reply)                         \
-_(SNAT_ADD_STATIC_MAPPING_REPLY, snat_add_static_mapping_reply)
+_(SNAT_ADD_STATIC_MAPPING_REPLY, snat_add_static_mapping_reply) \
+_(SNAT_CONTROL_PING_REPLY, snat_control_ping_reply)             \
+_(SNAT_STATIC_MAPPING_DETAILS, snat_static_mapping_details)     \
+_(SNAT_SHOW_CONFIG_REPLY, snat_show_config_reply)
 
 /* M: construct, but don't yet send a message */
 #define M(T,t)                                                  \
@@ -277,6 +280,121 @@ static int api_snat_add_static_mapping(vat_main_t * vam)
   return 0;
 }
 
+static void vl_api_snat_control_ping_reply_t_handler
+  (vl_api_snat_control_ping_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  i32 retval = ntohl (mp->retval);
+  if (vam->async_mode)
+    {
+      vam->async_errors += (retval < 0);
+    }
+  else
+    {
+      vam->retval = retval;
+      vam->result_ready = 1;
+    }
+}
+
+static void vl_api_snat_static_mapping_details_t_handler
+  (vl_api_snat_static_mapping_details_t *mp)
+{
+  snat_test_main_t * sm = &snat_test_main;
+  vat_main_t *vam = sm->vat_main;
+
+  if (mp->addr_only)
+      fformat (vam->ofp, "%15U%6s%15U%6s%11d\n",
+               format_ip4_address, &mp->local_ip_address, "",
+               format_ip4_address, &mp->external_ip_address, "",
+               ntohl (mp->vrf_id));
+  else
+      fformat (vam->ofp, "%15U%6d%15U%6d%11d\n",
+               format_ip4_address, &mp->local_ip_address,
+               ntohs (mp->local_port),
+               format_ip4_address, &mp->external_ip_address,
+               ntohs (mp->external_port),
+               ntohl (mp->vrf_id));
+
+}
+
+static int api_snat_static_mapping_dump(vat_main_t * vam)
+{
+  snat_test_main_t * sm = &snat_test_main;
+  f64 timeout;
+  vl_api_snat_static_mapping_dump_t * mp;
+
+  if (vam->json_output)
+    {
+      clib_warning ("JSON output not supported for snat_static_mapping_dump");
+      return -99;
+    }
+
+  fformat (vam->ofp, "%21s%21s\n", "local", "external");
+  fformat (vam->ofp, "%15s%6s%15s%6s%11s\n", "address", "port", "address",
+           "port", "vrf");
+
+  M(SNAT_STATIC_MAPPING_DUMP, snat_static_mapping_dump);
+  S;
+  /* Use a control ping for synchronization */
+  {
+    vl_api_snat_control_ping_t *mp;
+    M (SNAT_CONTROL_PING, snat_control_ping);
+    S;
+  }
+  W;
+  /* NOTREACHED */
+  return 0;
+}
+
+static void vl_api_snat_show_config_reply_t_handler
+  (vl_api_snat_show_config_reply_t *mp)
+{
+  snat_test_main_t * sm = &snat_test_main;
+  vat_main_t *vam = sm->vat_main;
+  i32 retval = ntohl (mp->retval);
+
+  if (retval >= 0)
+    {
+      fformat (vam->ofp, "translation hash buckets %d\n",
+               ntohl (mp->translation_buckets));
+      fformat (vam->ofp, "translation hash memory %d\n",
+               ntohl (mp->translation_memory_size));
+      fformat (vam->ofp, "user hash buckets %d\n", ntohl (mp->user_buckets));
+      fformat (vam->ofp, "user hash memory %d\n", ntohl (mp->user_memory_size));
+      fformat (vam->ofp, "max translations per user %d\n",
+               ntohl (mp->max_translations_per_user));
+      fformat (vam->ofp, "outside VRF id %d\n", ntohl (mp->outside_vrf_id));
+      fformat (vam->ofp, "inside VRF id %d\n", ntohl (mp->inside_vrf_id));
+      if (mp->static_mapping_only)
+        {
+          fformat (vam->ofp, "static mapping only");
+          if (mp->static_mapping_connection_tracking)
+            fformat (vam->ofp, " connection tracking");
+          fformat (vam->ofp, "\n");
+        }
+    }
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static int api_snat_show_config(vat_main_t * vam)
+{
+  snat_test_main_t * sm = &snat_test_main;
+  f64 timeout;
+  vl_api_snat_show_config_t * mp;
+
+  if (vam->json_output)
+    {
+      clib_warning ("JSON output not supported for snat_show_config");
+      return -99;
+    }
+
+  M(SNAT_SHOW_CONFIG, snat_show_config);
+  S; W;
+  /* NOTREACHED */
+  return 0;
+}
+
 /* 
  * List of messages that the api test plugin sends,
  * and that the data plane plugin processes
@@ -286,7 +404,9 @@ _(snat_add_address_range, "<start-addr> [- <end-addr]")          \
 _(snat_interface_add_del_feature,                                \
   "<intfc> | sw_if_index <id> [in] [out] [del]")                 \
 _(snat_add_static_mapping, "local_addr <ip> external_addr <ip> " \
-  "[local_port <n>] [external_port <n>] [vrf <table-id>] [del]")
+  "[local_port <n>] [external_port <n>] [vrf <table-id>] [del]") \
+_(snat_static_mapping_dump, "")                                  \
+_(snat_show_config, "")
 
 void vat_api_hookup (vat_main_t *vam)
 {

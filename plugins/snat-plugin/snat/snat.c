@@ -76,6 +76,21 @@ do {                                                            \
     vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \
 } while(0);
 
+#define REPLY_MACRO2(t, body)                                   \
+do {                                                            \
+    unix_shared_memory_queue_t * q =                            \
+    vl_api_client_index_to_input_queue (mp->client_index);      \
+    if (!q)                                                     \
+        return;                                                 \
+                                                                \
+    rmp = vl_msg_api_alloc (sizeof (*rmp));                     \
+    rmp->_vl_msg_id = ntohs((t)+sm->msg_id_base);               \
+    rmp->context = mp->context;                                 \
+    rmp->retval = ntohl(rv);                                    \
+    do {body;} while (0);                                       \
+    vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \
+} while(0);
+
 
 /* Hook up input features */
 VNET_IP4_UNICAST_FEATURE_INIT (ip4_snat_in2out, static) = {
@@ -559,6 +574,7 @@ vl_api_snat_add_static_mapping_t_handler
   vl_api_snat_add_static_mapping_reply_t * rmp;
   ip4_address_t local_addr, external_addr;
   u16 local_port = 0, external_port = 0;
+  u32 vrf_id;
   int rv = 0;
 
   if (mp->is_ip4 != 1)
@@ -574,9 +590,10 @@ vl_api_snat_add_static_mapping_t_handler
       local_port = clib_net_to_host_u16 (mp->local_port);
       external_port = clib_net_to_host_u16 (mp->external_port);
     }
+  vrf_id = clib_net_to_host_u32 (mp->vrf_id);
 
   rv = snat_add_static_mapping(local_addr, external_addr, local_port,
-                               external_port, mp->vrf_id, mp->addr_only,
+                               external_port, vrf_id, mp->addr_only,
                                mp->is_add);
 
  send_reply:
@@ -599,8 +616,115 @@ static void *vl_api_snat_add_static_mapping_t_print
                 clib_net_to_host_u16 (mp->external_port));
 
   if (mp->vrf_id != ~0)
-    s = format (s, "vrf_id %d", clib_net_to_host_u32 (mp->vrf_id));
+    s = format (s, "vrf %d", clib_net_to_host_u32 (mp->vrf_id));
     
+  FINISH;
+}
+
+static void
+send_snat_static_mapping_details
+(snat_static_mapping_t * m, unix_shared_memory_queue_t * q, u32 context)
+{
+  vl_api_snat_static_mapping_details_t *rmp;
+  snat_main_t * sm = &snat_main;
+
+  rmp = vl_msg_api_alloc (sizeof (*rmp));
+  memset (rmp, 0, sizeof (*rmp));
+  rmp->_vl_msg_id = ntohs (VL_API_SNAT_STATIC_MAPPING_DETAILS+sm->msg_id_base);
+  rmp->is_ip4 = 1;
+  rmp->addr_only = m->addr_only;
+  clib_memcpy (rmp->local_ip_address, &(m->local_addr), 4);
+  clib_memcpy (rmp->external_ip_address, &(m->external_addr), 4);
+  rmp->local_port = htons (m->local_port);
+  rmp->external_port = htons (m->external_port);
+  rmp->vrf_id = htonl (m->vrf_id);
+  rmp->context = context;
+
+  vl_msg_api_send_shmem (q, (u8 *) & rmp);
+}
+
+static void
+vl_api_snat_static_mapping_dump_t_handler
+(vl_api_snat_static_mapping_dump_t * mp)
+{
+  unix_shared_memory_queue_t *q;
+  snat_main_t * sm = &snat_main;
+  snat_static_mapping_t * m;
+
+  q = vl_api_client_index_to_input_queue (mp->client_index);
+  if (q == 0)
+    return;
+
+  pool_foreach (m, sm->static_mappings,
+  ({
+      send_snat_static_mapping_details (m, q, mp->context);
+  }));
+}
+
+static void *vl_api_snat_static_mapping_dump_t_print
+(vl_api_snat_static_mapping_dump_t *mp, void * handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: snat_static_mapping_dump ");
+
+  FINISH;
+}
+
+static void
+vl_api_snat_control_ping_t_handler
+(vl_api_snat_control_ping_t * mp)
+{
+  vl_api_snat_control_ping_reply_t *rmp;
+  snat_main_t * sm = &snat_main;
+  int rv = 0;
+
+  REPLY_MACRO2(VL_API_SNAT_CONTROL_PING_REPLY,
+  ({
+    rmp->vpe_pid = ntohl (getpid());
+  }));
+}
+
+static void *vl_api_snat_control_ping_t_print
+(vl_api_snat_control_ping_t *mp, void * handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: snat_control_ping ");
+
+  FINISH;
+}
+
+static void
+vl_api_snat_show_config_t_handler
+(vl_api_snat_show_config_t * mp)
+{
+  vl_api_snat_show_config_reply_t *rmp;
+  snat_main_t * sm = &snat_main;
+  int rv = 0;
+
+  REPLY_MACRO2(VL_API_SNAT_SHOW_CONFIG_REPLY,
+  ({
+    rmp->translation_buckets = htons (sm->translation_buckets);
+    rmp->translation_memory_size = htons (sm->translation_memory_size);
+    rmp->user_buckets = htons (sm->user_buckets);
+    rmp->user_memory_size = htons (sm->user_memory_size);
+    rmp->max_translations_per_user = htons (sm->max_translations_per_user);
+    rmp->outside_vrf_id = htons (sm->outside_vrf_id);
+    rmp->inside_vrf_id = htons (sm->inside_vrf_id);
+    rmp->static_mapping_only = sm->static_mapping_only;
+    rmp->static_mapping_connection_tracking =
+      sm->static_mapping_connection_tracking;
+  }));
+}
+
+static void *vl_api_snat_show_config_t_print
+(vl_api_snat_show_config_t *mp, void * handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: snat_show_config ");
+
   FINISH;
 }
 
@@ -608,7 +732,10 @@ static void *vl_api_snat_add_static_mapping_t_print
 #define foreach_snat_plugin_api_msg                                     \
 _(SNAT_ADD_ADDRESS_RANGE, snat_add_address_range)                       \
 _(SNAT_INTERFACE_ADD_DEL_FEATURE, snat_interface_add_del_feature)       \
-_(SNAT_ADD_STATIC_MAPPING, snat_add_static_mapping)
+_(SNAT_ADD_STATIC_MAPPING, snat_add_static_mapping)                     \
+_(SNAT_CONTROL_PING, snat_control_ping)                                 \
+_(SNAT_STATIC_MAPPING_DUMP, snat_static_mapping_dump)                   \
+_(SNAT_SHOW_CONFIG, snat_show_config)
 
 /* Set up the API message handling tables */
 static clib_error_t *
