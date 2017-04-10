@@ -220,7 +220,7 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		print(self.vpp2.vapi.ppcli('ip route add 172.16.1.0/24 via 192.168.1.1'))
 	
 	#@unittest.skip("DONE")
-	def test_memif_traffic_01_slave_master(self):	
+	def test_memif_traffic_02_slave_master(self):	
 		""" ICMP packet stream slave -> master """
 		memifs_index = MEMIFTestCase_m.connect_memif(self)
 		count = 5
@@ -245,7 +245,7 @@ class MEMIFTestCase_m(MEMIFTestCase):
 
 
 	#@unittest.skip("DONE")
-	def test_memif_traffic_02_master_slave(self):
+	def test_memif_traffic_01_master_slave(self):
 		""" ICMP packet stream master -> slave """
 		memifs_index = MEMIFTestCase_m.connect_memif(self)
 		
@@ -273,9 +273,9 @@ class MEMIFTestCase_m(MEMIFTestCase):
 				if isinstance(p, PicklablePacket):
 					p = p()
 					n_cap.append(p)
+			self.verify_capture_m_s(n_cap)
 		self.pg0.assert_nothing_captured()
-		#self.verify_capture_m_s(n_cap)
-		
+	
 		MEMIFApi.delete_memif(self, memifs_index[0])
 		MEMIFApi.delete_memif(self.vpp2, memifs_index[1])		
 
