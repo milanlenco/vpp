@@ -10,7 +10,7 @@ from scapy.layers.l2 import Ether, ARP
 from scapy.utils import rdpcap
 from scapy.plist import PacketList
 from framework import VppTestCase
-from memif_pg_interface import VppPGInterface
+from vpp_pg_interface import VppPGInterface
 from picklable_packet import PicklablePacket
 
 
