@@ -49,7 +49,7 @@ adj_midchain_tx_inline (vlib_main_t * vm,
     u32 next_index;
     vnet_main_t *vnm = vnet_get_main ();
     vnet_interface_main_t *im = &vnm->interface_main;
-    u32 cpu_index = vm->cpu_index;
+    u32 thread_index = vm->thread_index;
 
     /* Vector of buffer / pkt indices we're supposed to process */
     from = vlib_frame_vector_args (frame);
@@ -124,13 +124,13 @@ adj_midchain_tx_inline (vlib_main_t * vm,
 	    {
 		vlib_increment_combined_counter (im->combined_sw_if_counters
 						 + VNET_INTERFACE_COUNTER_TX,
-						 cpu_index,
+						 thread_index,
 						 adj0->rewrite_header.sw_if_index,
 						 1,
 						 vlib_buffer_length_in_chain (vm, b0));
 		vlib_increment_combined_counter (im->combined_sw_if_counters
 						 + VNET_INTERFACE_COUNTER_TX,
-						 cpu_index,
+						 thread_index,
 						 adj1->rewrite_header.sw_if_index,
 						 1,
 						 vlib_buffer_length_in_chain (vm, b1));
@@ -181,7 +181,7 @@ adj_midchain_tx_inline (vlib_main_t * vm,
 	    {
 		vlib_increment_combined_counter (im->combined_sw_if_counters
 						 + VNET_INTERFACE_COUNTER_TX,
-						 cpu_index,
+						 thread_index,
 						 adj0->rewrite_header.sw_if_index,
 						 1,
 						 vlib_buffer_length_in_chain (vm, b0));
@@ -346,7 +346,7 @@ adj_get_midchain_node (vnet_link_t link)
 static u8
 adj_midchain_get_feature_arc_index_for_link_type (const ip_adjacency_t *adj)
 {
-  u8 arc = (u8) ~0;
+    u8 arc = (u8) ~0;
     switch (adj->ia_link)
     {
     case VNET_LINK_IP4:
@@ -384,6 +384,58 @@ adj_midchain_get_feature_arc_index_for_link_type (const ip_adjacency_t *adj)
     return (arc);
 }
 
+static u32
+adj_nbr_midchain_get_tx_node (ip_adjacency_t *adj)
+{
+    return ((adj->ia_flags & ADJ_FLAG_MIDCHAIN_NO_COUNT) ?
+            adj_midchain_tx_no_count_node.index :
+            adj_midchain_tx_node.index);
+}
+
+/**
+ * adj_midchain_setup
+ *
+ * Setup the adj as a mid-chain
+ */
+void
+adj_midchain_setup (adj_index_t adj_index,
+                    adj_midchain_fixup_t fixup,
+                    adj_flags_t flags)
+{
+    u32 feature_index, tx_node;
+    ip_adjacency_t *adj;
+    u8 arc_index;
+
+    ASSERT(ADJ_INDEX_INVALID != adj_index);
+
+    adj = adj_get(adj_index);
+
+    adj->sub_type.midchain.fixup_func = fixup;
+    adj->ia_flags |= flags;
+
+    arc_index = adj_midchain_get_feature_arc_index_for_link_type (adj);
+    feature_index = (flags & ADJ_FLAG_MIDCHAIN_NO_COUNT) ?
+                    adj_midchain_tx_no_count_feature_node[adj->ia_link] :
+                    adj_midchain_tx_feature_node[adj->ia_link];
+
+    tx_node = adj_nbr_midchain_get_tx_node(adj);
+
+    vnet_feature_enable_disable_with_index (arc_index, feature_index,
+					    adj->rewrite_header.sw_if_index,
+					    1 /* enable */, 0, 0);
+
+    /*
+     * stack the midchain on the drop so it's ready to forward in the adj-midchain-tx.
+     * The graph arc used/created here is from the midchain-tx node to the
+     * child's registered node. This is because post adj processing the next
+     * node are any output features, then the midchain-tx.  from there we
+     * need to get to the stacked child's node.
+     */
+    dpo_stack_from_node(tx_node,
+			&adj->sub_type.midchain.next_dpo,
+			drop_dpo_get(vnet_link_to_dpo_proto(adj->ia_link)));
+}
+
 /**
  * adj_nbr_midchain_update_rewrite
  *
@@ -394,12 +446,10 @@ adj_midchain_get_feature_arc_index_for_link_type (const ip_adjacency_t *adj)
 void
 adj_nbr_midchain_update_rewrite (adj_index_t adj_index,
 				 adj_midchain_fixup_t fixup,
-				 adj_midchain_flag_t flags,
+				 adj_flags_t flags,
 				 u8 *rewrite)
 {
     ip_adjacency_t *adj;
-    u8 arc_index;
-    u32 feature_index;
 
     ASSERT(ADJ_INDEX_INVALID != adj_index);
 
@@ -415,31 +465,7 @@ adj_nbr_midchain_update_rewrite (adj_index_t adj_index,
      */
     ASSERT(NULL != rewrite);
 
-    adj->sub_type.midchain.fixup_func = fixup;
-
-    arc_index = adj_midchain_get_feature_arc_index_for_link_type (adj);
-    feature_index = (flags & ADJ_MIDCHAIN_FLAG_NO_COUNT) ?
-                    adj_midchain_tx_no_count_feature_node[adj->ia_link] :
-                    adj_midchain_tx_feature_node[adj->ia_link];
-
-    adj->sub_type.midchain.tx_function_node = (flags & ADJ_MIDCHAIN_FLAG_NO_COUNT) ?
-                                               adj_midchain_tx_no_count_node.index :
-                                               adj_midchain_tx_node.index;
-
-    vnet_feature_enable_disable_with_index (arc_index, feature_index,
-					    adj->rewrite_header.sw_if_index,
-					    1 /* enable */, 0, 0);
-
-    /*
-     * stack the midchain on the drop so it's ready to forward in the adj-midchain-tx.
-     * The graph arc used/created here is from the midchain-tx node to the
-     * child's registered node. This is because post adj processing the next
-     * node are any output features, then the midchain-tx.  from there we
-     * need to get to the stacked child's node.
-     */
-    dpo_stack_from_node(adj->sub_type.midchain.tx_function_node,
-			&adj->sub_type.midchain.next_dpo,
-			drop_dpo_get(vnet_link_to_dpo_proto(adj->ia_link)));
+    adj_midchain_setup(adj_index, fixup, flags);
 
     /*
      * update the rewirte with the workers paused.
@@ -447,7 +473,7 @@ adj_nbr_midchain_update_rewrite (adj_index_t adj_index,
     adj_nbr_update_rewrite_internal(adj,
 				    IP_LOOKUP_NEXT_MIDCHAIN,
 				    adj_get_midchain_node(adj->ia_link),
-				    adj->sub_type.midchain.tx_function_node,
+				    adj_nbr_midchain_get_tx_node(adj),
 				    rewrite);
 }
 
@@ -489,9 +515,10 @@ adj_nbr_midchain_stack (adj_index_t adj_index,
 
     adj = adj_get(adj_index);
 
-    ASSERT(IP_LOOKUP_NEXT_MIDCHAIN == adj->lookup_next_index);
+    ASSERT((IP_LOOKUP_NEXT_MIDCHAIN == adj->lookup_next_index) ||
+           (IP_LOOKUP_NEXT_MCAST_MIDCHAIN == adj->lookup_next_index));
 
-    dpo_stack_from_node(adj->sub_type.midchain.tx_function_node,
+    dpo_stack_from_node(adj_nbr_midchain_get_tx_node(adj),
 			&adj->sub_type.midchain.next_dpo,
 			next);
 }
@@ -501,7 +528,6 @@ format_adj_midchain (u8* s, va_list *ap)
 {
     index_t index = va_arg(*ap, index_t);
     u32 indent = va_arg(*ap, u32);
-    vnet_main_t * vnm = vnet_get_main();
     ip_adjacency_t * adj = adj_get(index);
 
     s = format (s, "%U", format_vnet_link, adj->ia_link);
@@ -509,8 +535,7 @@ format_adj_midchain (u8* s, va_list *ap)
 		format_ip46_address, &adj->sub_type.nbr.next_hop);
     s = format (s, " %U",
 		format_vnet_rewrite,
-		vnm->vlib_main, &adj->rewrite_header,
-		sizeof (adj->rewrite_data), indent);
+		&adj->rewrite_header, sizeof (adj->rewrite_data), indent);
     s = format (s, "\n%Ustacked-on:\n%U%U",
 		format_white_space, indent,
 		format_white_space, indent+2,

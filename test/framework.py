@@ -50,6 +50,10 @@ class _PacketInfo(object):
     #: Store the index of the destination packet generator interface
     #: of the packet.
     dst = -1
+    #: Store expected ip version
+    ip = -1
+    #: Store expected upper protocol
+    proto = -1
     #: Store the copy of the former packet.
     data = None
 
@@ -142,6 +146,16 @@ class VppTestCase(unittest.TestCase):
         cls.set_debug_flags(d)
         cls.vpp_bin = os.getenv('VPP_TEST_BIN', "vpp")
         cls.plugin_path = os.getenv('VPP_TEST_PLUGIN_PATH')
+        cls.extern_plugin_path = os.getenv('EXTERN_PLUGINS')
+        plugin_path = None
+        if cls.plugin_path is not None:
+            if cls.extern_plugin_path is not None:
+                plugin_path = "%s:%s" % (
+                    cls.plugin_path, cls.extern_plugin_path)
+            else:
+                plugin_path = cls.plugin_path
+        elif cls.extern_plugin_path is not None:
+            plugin_path = cls.extern_plugin_path
         debug_cli = ""
         if cls.step or cls.debug_gdb or cls.debug_gdbserver:
             debug_cli = "cli-listen localhost:5002"
@@ -160,8 +174,8 @@ class VppTestCase(unittest.TestCase):
                            "api-segment", "{", "prefix", cls.shm_prefix, "}",
                            "plugins", "{", "plugin", "dpdk_plugin.so", "{",
                            "disable", "}", "}"]
-        if cls.plugin_path is not None:
-            cls.vpp_cmdline.extend(["plugin_path", cls.plugin_path])
+        if plugin_path is not None:
+            cls.vpp_cmdline.extend(["plugin_path", plugin_path])
         cls.logger.info("vpp_cmdline: %s" % cls.vpp_cmdline)
 
     @classmethod
@@ -345,7 +359,7 @@ class VppTestCase(unittest.TestCase):
                            self._testMethodDoc))
         if not self.vpp_dead:
             self.logger.debug(self.vapi.cli("show trace"))
-            self.logger.info(self.vapi.ppcli("show int"))
+            self.logger.info(self.vapi.ppcli("show interface"))
             self.logger.info(self.vapi.ppcli("show hardware"))
             self.logger.info(self.vapi.ppcli("show error"))
             self.logger.info(self.vapi.ppcli("show run"))
@@ -515,7 +529,8 @@ class VppTestCase(unittest.TestCase):
 
         :returns: string containing serialized data from packet info
         """
-        return "%d %d %d" % (info.index, info.src, info.dst)
+        return "%d %d %d %d %d" % (info.index, info.src, info.dst,
+                                   info.ip, info.proto)
 
     @staticmethod
     def payload_to_info(payload):
@@ -532,6 +547,8 @@ class VppTestCase(unittest.TestCase):
         info.index = int(numbers[0])
         info.src = int(numbers[1])
         info.dst = int(numbers[2])
+        info.ip = int(numbers[3])
+        info.proto = int(numbers[4])
         return info
 
     def get_next_packet_info(self, info):

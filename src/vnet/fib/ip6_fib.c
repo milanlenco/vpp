@@ -55,22 +55,29 @@ static u32
 create_fib_with_table_id (u32 table_id)
 {
     fib_table_t *fib_table;
+    ip6_fib_t *v6_fib;
 
     pool_get_aligned(ip6_main.fibs, fib_table, CLIB_CACHE_LINE_BYTES);
-    memset(fib_table, 0, sizeof(*fib_table));
+    pool_get_aligned(ip6_main.v6_fibs, v6_fib, CLIB_CACHE_LINE_BYTES);
 
+    memset(fib_table, 0, sizeof(*fib_table));
+    memset(v6_fib, 0, sizeof(*v6_fib));
+
+    ASSERT((fib_table - ip6_main.fibs) ==
+           (v6_fib - ip6_main.v6_fibs));
+    
     fib_table->ft_proto = FIB_PROTOCOL_IP6;
     fib_table->ft_index =
-	fib_table->v6.index =
-	    (fib_table - ip6_main.fibs);
+	    v6_fib->index =
+                (fib_table - ip6_main.fibs);
 
     hash_set(ip6_main.fib_index_by_table_id, table_id, fib_table->ft_index);
 
     fib_table->ft_table_id =
-	fib_table->v6.table_id =
+	v6_fib->table_id =
 	    table_id;
     fib_table->ft_flow_hash_config = 
-	fib_table->v6.flow_hash_config =
+	v6_fib->flow_hash_config =
 	    IP_FLOW_HASH_DEFAULT;
 
     vnet_ip6_fib_init(fib_table->ft_index);
@@ -188,6 +195,7 @@ ip6_fib_table_destroy (u32 fib_index)
     {
 	hash_unset (ip6_main.fib_index_by_table_id, fib_table->ft_table_id);
     }
+    pool_put_index(ip6_main.v6_fibs, fib_table->ft_index);
     pool_put(ip6_main.fibs, fib_table);
 }
 
@@ -552,12 +560,15 @@ static void
 ip6_fib_table_show_one (ip6_fib_t *fib,
 			vlib_main_t * vm,
 			ip6_address_t *address,
-			u32 mask_len)
+			u32 mask_len,
+                        int detail)
 {
     vlib_cli_output(vm, "%U",
                     format_fib_entry,
                     ip6_fib_table_lookup(fib->index, address, mask_len),
-                    FIB_ENTRY_FORMAT_DETAIL);
+                    (detail ?
+                     FIB_ENTRY_FORMAT_DETAIL2:
+                     FIB_ENTRY_FORMAT_DETAIL));
 }
 
 typedef struct {
@@ -565,8 +576,9 @@ typedef struct {
   u64 count_by_prefix_length[129];
 } count_routes_in_fib_at_prefix_length_arg_t;
 
-static void count_routes_in_fib_at_prefix_length 
-(BVT(clib_bihash_kv) * kvp, void *arg)
+static void
+count_routes_in_fib_at_prefix_length (BVT(clib_bihash_kv) * kvp,
+                                      void *arg)
 {
   count_routes_in_fib_at_prefix_length_arg_t * ap = arg;
   int mask_width;
@@ -592,6 +604,7 @@ ip6_show_fib (vlib_main_t * vm,
     ip6_address_t matching_address;
     u32 mask_len  = 128;
     int table_id = -1, fib_index = ~0;
+    int detail = 0;
 
     verbose = 1;
     matching = 0;
@@ -602,6 +615,10 @@ ip6_show_fib (vlib_main_t * vm,
 	    unformat (input, "summary") ||
 	    unformat (input, "sum"))
 	    verbose = 0;
+ 
+	else if (unformat (input, "detail")   ||
+                 unformat (input, "det"))
+	    detail = 1;
 
 	else if (unformat (input, "%U/%d",
 			   unformat_ip6_address, &matching_address, &mask_len))
@@ -620,7 +637,7 @@ ip6_show_fib (vlib_main_t * vm,
 
     pool_foreach (fib_table, im6->fibs,
     ({
-	fib = &(fib_table->v6);
+	fib = pool_elt_at_index(im6->v6_fibs, fib_table->ft_index);
 	if (table_id >= 0 && table_id != (int)fib->table_id)
 	    continue;
 	if (fib_index != ~0 && fib_index != (int)fib->index)
@@ -659,7 +676,7 @@ ip6_show_fib (vlib_main_t * vm,
 	}
 	else
 	{
-	    ip6_fib_table_show_one(fib, vm, &matching_address, mask_len);
+	    ip6_fib_table_show_one(fib, vm, &matching_address, mask_len, detail);
 	}
     }));
 
@@ -763,7 +780,7 @@ ip6_show_fib (vlib_main_t * vm,
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (ip6_show_fib_command, static) = {
     .path = "show ip6 fib",
-    .short_help = "show ip6 fib [summary] [table <table-id>] [index <fib-id>] [<ip6-addr>[/<width>]]",
+    .short_help = "show ip6 fib [summary] [table <table-id>] [index <fib-id>] [<ip6-addr>[/<width>]] [detail]",
     .function = ip6_show_fib,
 };
 /* *INDENT-ON* */

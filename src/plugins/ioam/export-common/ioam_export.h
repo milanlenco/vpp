@@ -76,11 +76,6 @@ typedef struct
   u32 export_process_node_index;
 } ioam_export_main_t;
 
-extern ioam_export_main_t ioam_export_main;
-extern ioam_export_main_t vxlan_gpe_ioam_export_main;
-
-extern vlib_node_registration_t export_node;
-extern vlib_node_registration_t vxlan_export_node;
 
 #define DEFAULT_EXPORT_SIZE (3 * CLIB_CACHE_LINE_BYTES)
 /*
@@ -482,8 +477,8 @@ do {                                                                           \
   from = vlib_frame_vector_args (F);                                           \
   n_left_from = (F)->n_vectors;                                                \
   next_index = (N)->cached_next_index;                                         \
-  while (__sync_lock_test_and_set ((EM)->lockp[(VM)->cpu_index], 1));          \
-  my_buf = ioam_export_get_my_buffer (EM, (VM)->cpu_index);                    \
+  while (__sync_lock_test_and_set ((EM)->lockp[(VM)->thread_index], 1));       \
+  my_buf = ioam_export_get_my_buffer (EM, (VM)->thread_index);                 \
   my_buf->touched_at = vlib_time_now (VM);                                     \
   while (n_left_from > 0)                                                      \
     {                                                                          \
@@ -625,7 +620,7 @@ do {                                                                           \
     }                                                                          \
   vlib_node_increment_counter (VM, export_node.index,                          \
 			       EXPORT_ERROR_RECORDED, pkts_recorded);          \
-  *(EM)->lockp[(VM)->cpu_index] = 0;                                           \
+  *(EM)->lockp[(VM)->thread_index] = 0;                                        \
 } while(0)
 
 #endif /* __included_ioam_export_h__ */

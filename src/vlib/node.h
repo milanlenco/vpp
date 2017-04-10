@@ -42,6 +42,7 @@
 
 #include <vppinfra/cpu.h>
 #include <vppinfra/longjmp.h>
+#include <vppinfra/lock.h>
 #include <vppinfra/timing_wheel.h>
 #include <vlib/trace.h>		/* for vlib_trace_filter_t */
 
@@ -343,8 +344,8 @@ typedef struct vlib_frame_t
   /* Number of vector elements currently in frame. */
   u16 n_vectors;
 
-  /* Owner cpuid / heap id */
-  u16 cpu_index;
+  /* Owner thread / heap id */
+  u16 thread_index;
 
   /* Scalar and vector arguments to next node. */
   u8 arguments[0];
@@ -411,64 +412,67 @@ typedef struct
 
 typedef struct vlib_node_runtime_t
 {
-  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  /* Node function to call. */
-  vlib_node_function_t *function;
+  CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);	/**< cacheline mark */
 
-  /* Vector of errors for this node. */
-  vlib_error_t *errors;
+  vlib_node_function_t *function;	/**< Node function to call. */
 
-  /* Number of clock cycles. */
-  u32 clocks_since_last_overflow;
+  vlib_error_t *errors;			/**< Vector of errors for this node. */
 
-  /* Maximum clock cycle for an invocation. */
-  u32 max_clock;
+  u32 clocks_since_last_overflow;	/**< Number of clock cycles. */
 
-  /* Number of vectors in the recorded max_clock. */
-  u32 max_clock_n;
+  u32 max_clock;			/**< Maximum clock cycle for an
+					  invocation. */
 
-  /* Number of calls. */
-  u32 calls_since_last_overflow;
+  u32 max_clock_n;			/**< Number of vectors in the recorded
+					  max_clock. */
 
-  /* Number of vector elements processed by this node. */
-  u32 vectors_since_last_overflow;
+  u32 calls_since_last_overflow;	/**< Number of calls. */
 
-  /* Start of next frames for this node. */
-  u32 next_frame_index;
+  u32 vectors_since_last_overflow;	/**< Number of vector elements
+					  processed by this node. */
 
-  /* Node index. */
-  u32 node_index;
+  u32 next_frame_index;			/**< Start of next frames for this
+					  node. */
 
-  /* For input nodes: decremented on each main loop interation until it reaches zero
-     and function is called.  Allows some input nodes to be called
-     more than others. */
-  u32 input_main_loops_per_call;
+  u32 node_index;			/**< Node index. */
 
-  /* Saved main loop counter of last dispatch of this node. */
-  u32 main_loop_count_last_dispatch;
+  u32 input_main_loops_per_call;	/**< For input nodes: decremented
+					  on each main loop interation until
+					  it reaches zero and function is
+					  called.  Allows some input nodes to
+					  be called more than others. */
+
+  u32 main_loop_count_last_dispatch;	/**< Saved main loop counter of last
+					  dispatch of this node. */
 
   u32 main_loop_vector_stats[2];
 
-  /* Copy of main node flags. */
-  u16 flags;
+  u16 flags;				/**< Copy of main node flags. */
 
-  /* Input node state. */
-  u16 state;
+  u16 state;				/**< Input node state. */
 
   u16 n_next_nodes;
 
-  /* Next frame index that vector arguments were last enqueued to
-     last time this node ran.  Set to zero before first run
-     of this node. */
-  u16 cached_next_index;
+  u16 cached_next_index;		/**< Next frame index that vector
+					  arguments were last enqueued to
+					  last time this node ran. Set to
+					  zero before first run of this
+					  node. */
 
-  /* CPU this node runs on */
-  u16 cpu_index;
+  u16 thread_index;			/**< thread this node runs on */
 
-  /* Function dependent node-runtime. */
-  u8 runtime_data[0];
+  u8 runtime_data[0];			/**< Function dependent
+					  node-runtime data. This data is
+					  thread local, and it is not
+					  cloned from main thread. It needs
+					  to be initialized for each thread
+					  before it is used unless
+					  runtime_data template exists in
+					  vlib_node_t. */
 }
 vlib_node_runtime_t;
+
+#define VLIB_NODE_RUNTIME_DATA_SIZE	(sizeof (vlib_node_runtime_t) - STRUCT_OFFSET_OF (vlib_node_runtime_t, runtime_data))
 
 typedef struct
 {
@@ -641,6 +645,7 @@ typedef struct
 
   /* Node runtime indices for input nodes with pending interrupts. */
   u32 *pending_interrupt_node_runtime_indices;
+  clib_spinlock_t pending_interrupt_lock;
 
   /* Input nodes are switched from/to interrupt to/from polling mode
      when average vector length goes above/below polling/interrupt

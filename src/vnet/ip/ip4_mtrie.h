@@ -47,72 +47,47 @@
 
 /* ip4 fib leafs: 4 ply 8-8-8-8 mtrie.
    1 + 2*adj_index for terminal leaves.
-   0 + 2*next_ply_index for non-terminals.
+   0 + 2*next_ply_index for non-terminals, i.e. PLYs
    1 => empty (adjacency index of zero is special miss adjacency). */
 typedef u32 ip4_fib_mtrie_leaf_t;
 
 #define IP4_FIB_MTRIE_LEAF_EMPTY (1 + 2*0)
-#define IP4_FIB_MTRIE_LEAF_ROOT  (0 + 2*0)
 
-always_inline u32
-ip4_fib_mtrie_leaf_is_empty (ip4_fib_mtrie_leaf_t n)
+/**
+ * @brief the 16 way stride that is the top PLY of the mtrie
+ * We do not maintain the count of 'real' leaves in this PLY, since
+ * it is never removed. The FIB will destroy the mtrie and the ply once
+ * the FIB is destroyed.
+ */
+#define PLY_16_SIZE (1<<16)
+typedef struct ip4_fib_mtrie_16_ply_t_
 {
-  return n == IP4_FIB_MTRIE_LEAF_EMPTY;
-}
+  /**
+   * The leaves/slots/buckets to be filed with leafs
+   */
+  union
+  {
+    ip4_fib_mtrie_leaf_t leaves[PLY_16_SIZE];
 
-always_inline u32
-ip4_fib_mtrie_leaf_is_non_empty (ip4_fib_mtrie_leaf_t n)
-{
-  return n != IP4_FIB_MTRIE_LEAF_EMPTY;
-}
+#ifdef CLIB_HAVE_VEC128
+    u32x4 leaves_as_u32x4[PLY_16_SIZE / 4];
+#endif
+  };
 
-always_inline u32
-ip4_fib_mtrie_leaf_is_terminal (ip4_fib_mtrie_leaf_t n)
-{
-  return n & 1;
-}
+  /**
+   * Prefix length for terminal leaves.
+   */
+  u8 dst_address_bits_of_leaves[PLY_16_SIZE];
+} ip4_fib_mtrie_16_ply_t;
 
-always_inline u32
-ip4_fib_mtrie_leaf_get_adj_index (ip4_fib_mtrie_leaf_t n)
+/**
+ * @brief One ply of the 4 ply mtrie fib.
+ */
+typedef struct ip4_fib_mtrie_8_ply_t_
 {
-  ASSERT (ip4_fib_mtrie_leaf_is_terminal (n));
-  return n >> 1;
-}
-
-always_inline ip4_fib_mtrie_leaf_t
-ip4_fib_mtrie_leaf_set_adj_index (u32 adj_index)
-{
-  ip4_fib_mtrie_leaf_t l;
-  l = 1 + 2 * adj_index;
-  ASSERT (ip4_fib_mtrie_leaf_get_adj_index (l) == adj_index);
-  return l;
-}
-
-always_inline u32
-ip4_fib_mtrie_leaf_is_next_ply (ip4_fib_mtrie_leaf_t n)
-{
-  return (n & 1) == 0;
-}
-
-always_inline u32
-ip4_fib_mtrie_leaf_get_next_ply_index (ip4_fib_mtrie_leaf_t n)
-{
-  ASSERT (ip4_fib_mtrie_leaf_is_next_ply (n));
-  return n >> 1;
-}
-
-always_inline ip4_fib_mtrie_leaf_t
-ip4_fib_mtrie_leaf_set_next_ply_index (u32 i)
-{
-  ip4_fib_mtrie_leaf_t l;
-  l = 0 + 2 * i;
-  ASSERT (ip4_fib_mtrie_leaf_get_next_ply_index (l) == i);
-  return l;
-}
-
-/* One ply of the 4 ply mtrie fib. */
-typedef struct
-{
+  /**
+   * The leaves/slots/buckets to be filed with leafs
+   */
   union
   {
     ip4_fib_mtrie_leaf_t leaves[256];
@@ -122,57 +97,131 @@ typedef struct
 #endif
   };
 
-  /* Prefix length for terminal leaves. */
+  /**
+   * Prefix length for leaves/ply.
+   */
   u8 dst_address_bits_of_leaves[256];
 
-  /* Number of non-empty leafs (whether terminal or not). */
+  /**
+   * Number of non-empty leafs (whether terminal or not).
+   */
   i32 n_non_empty_leafs;
 
-  /* Pad to cache line boundary. */
-  u8 pad[CLIB_CACHE_LINE_BYTES - 1 * sizeof (i32)];
-}
-ip4_fib_mtrie_ply_t;
+  /**
+   * The length of the ply's coviering prefix. Also a measure of its depth
+   * If a leaf in a slot has a mask length longer than this then it is
+   * 'non-empty'. Otherwise it is the value of the cover.
+   */
+  i32 dst_address_bits_base;
 
-STATIC_ASSERT (0 == sizeof (ip4_fib_mtrie_ply_t) % CLIB_CACHE_LINE_BYTES,
+  /* Pad to cache line boundary. */
+  u8 pad[CLIB_CACHE_LINE_BYTES - 2 * sizeof (i32)];
+}
+ip4_fib_mtrie_8_ply_t;
+
+STATIC_ASSERT (0 == sizeof (ip4_fib_mtrie_8_ply_t) % CLIB_CACHE_LINE_BYTES,
 	       "IP4 Mtrie ply cache line");
 
+/**
+ * @brief The mutiway-TRIE.
+ * There is no data associated with the mtrie apart from the top PLY
+ */
 typedef struct
 {
-  /* Pool of plies.  Index zero is root ply. */
-  ip4_fib_mtrie_ply_t *ply_pool;
-
-  /* Special case leaf for default route 0.0.0.0/0. */
-  ip4_fib_mtrie_leaf_t default_leaf;
+  /**
+   * Embed the PLY with the mtrie struct. This means that the Data-plane
+   * 'get me the mtrie' returns the first ply, and not an indirect 'pointer'
+   * to it. therefore no cachline misses in the data-path.
+   */
+  ip4_fib_mtrie_16_ply_t root_ply;
 } ip4_fib_mtrie_t;
 
-void ip4_fib_mtrie_init (ip4_fib_mtrie_t * m);
+/**
+ * @brief Initialise an mtrie
+ */
+void ip4_mtrie_init (ip4_fib_mtrie_t * m);
 
-struct ip4_fib_t;
+/**
+ * @brief Free an mtrie, It must be emty when free'd
+ */
+void ip4_mtrie_free (ip4_fib_mtrie_t * m);
 
-void ip4_fib_mtrie_add_del_route (struct ip4_fib_t *f,
-				  ip4_address_t dst_address,
-				  u32 dst_address_length,
-				  u32 adj_index, u32 is_del);
+/**
+ * @brief Add a route/rntry to the mtrie
+ */
+void ip4_fib_mtrie_route_add (ip4_fib_mtrie_t * m,
+			      const ip4_address_t * dst_address,
+			      u32 dst_address_length, u32 adj_index);
+/**
+ * @brief remove a route/rntry to the mtrie
+ */
+void ip4_fib_mtrie_route_del (ip4_fib_mtrie_t * m,
+			      const ip4_address_t * dst_address,
+			      u32 dst_address_length,
+			      u32 adj_index,
+			      u32 cover_address_length, u32 cover_adj_index);
 
-/* Returns adjacency index. */
-u32 ip4_mtrie_lookup_address (ip4_fib_mtrie_t * m, ip4_address_t dst);
-
+/**
+ * @brief Format/display the contents of the mtrie
+ */
 format_function_t format_ip4_fib_mtrie;
 
-/* Lookup step.  Processes 1 byte of 4 byte ip4 address. */
+/**
+ * @brief A global pool of 8bit stride plys
+ */
+extern ip4_fib_mtrie_8_ply_t *ip4_ply_pool;
+
+/**
+ * Is the leaf terminal (i.e. an LB index) or non-terminak (i.e. a PLY index)
+ */
+always_inline u32
+ip4_fib_mtrie_leaf_is_terminal (ip4_fib_mtrie_leaf_t n)
+{
+  return n & 1;
+}
+
+/**
+ * From the stored slot value extract the LB index value
+ */
+always_inline u32
+ip4_fib_mtrie_leaf_get_adj_index (ip4_fib_mtrie_leaf_t n)
+{
+  ASSERT (ip4_fib_mtrie_leaf_is_terminal (n));
+  return n >> 1;
+}
+
+/**
+ * @brief Lookup step.  Processes 1 byte of 4 byte ip4 address.
+ */
 always_inline ip4_fib_mtrie_leaf_t
-ip4_fib_mtrie_lookup_step (ip4_fib_mtrie_t * m,
+ip4_fib_mtrie_lookup_step (const ip4_fib_mtrie_t * m,
 			   ip4_fib_mtrie_leaf_t current_leaf,
 			   const ip4_address_t * dst_address,
 			   u32 dst_address_byte_index)
 {
-  ip4_fib_mtrie_leaf_t next_leaf;
-  ip4_fib_mtrie_ply_t *ply;
+  ip4_fib_mtrie_8_ply_t *ply;
+
   uword current_is_terminal = ip4_fib_mtrie_leaf_is_terminal (current_leaf);
 
-  ply = m->ply_pool + (current_is_terminal ? 0 : (current_leaf >> 1));
-  next_leaf = ply->leaves[dst_address->as_u8[dst_address_byte_index]];
-  next_leaf = current_is_terminal ? current_leaf : next_leaf;
+  if (!current_is_terminal)
+    {
+      ply = ip4_ply_pool + (current_leaf >> 1);
+      return (ply->leaves[dst_address->as_u8[dst_address_byte_index]]);
+    }
+
+  return current_leaf;
+}
+
+/**
+ * @brief Lookup step number 1.  Processes 2 bytes of 4 byte ip4 address.
+ */
+always_inline ip4_fib_mtrie_leaf_t
+ip4_fib_mtrie_lookup_step_one (const ip4_fib_mtrie_t * m,
+			       const ip4_address_t * dst_address)
+{
+  ip4_fib_mtrie_leaf_t next_leaf;
+
+  next_leaf = m->root_ply.leaves[dst_address->as_u16[0]];
 
   return next_leaf;
 }

@@ -5,10 +5,11 @@ import unittest
 
 from framework import VppTestCase, VppTestRunner
 from vpp_sub_interface import VppSubInterface, VppDot1QSubint, VppDot1ADSubint
-from vpp_ip_route import VppIpRoute, VppRoutePath
+from vpp_ip_route import VppIpRoute, VppRoutePath, VppIpMRoute, \
+    VppMRoutePath, MRouteItfFlags, MRouteEntryFlags
 
 from scapy.packet import Raw
-from scapy.layers.l2 import Ether, Dot1Q
+from scapy.layers.l2 import Ether, Dot1Q, ARP
 from scapy.layers.inet import IP, UDP, ICMP, icmptypes, icmpcodes
 from util import ppp
 
@@ -544,6 +545,225 @@ class TestIPNull(VppTestCase):
         self.assertEqual(icmpcodes[icmp.type][icmp.code], "host-prohibited")
         self.assertEqual(icmp.src, self.pg0.remote_ip4)
         self.assertEqual(icmp.dst, "10.0.0.2")
+
+
+class TestIPDisabled(VppTestCase):
+    """ IPv4 disabled """
+
+    def setUp(self):
+        super(TestIPDisabled, self).setUp()
+
+        # create 2 pg interfaces
+        self.create_pg_interfaces(range(2))
+
+        # PG0 is IP enalbed
+        self.pg0.admin_up()
+        self.pg0.config_ip4()
+        self.pg0.resolve_arp()
+
+        # PG 1 is not IP enabled
+        self.pg1.admin_up()
+
+    def tearDown(self):
+        super(TestIPDisabled, self).tearDown()
+        for i in self.pg_interfaces:
+            i.unconfig_ip4()
+            i.admin_down()
+
+    def send_and_assert_no_replies(self, intf, pkts, remark):
+        intf.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        for i in self.pg_interfaces:
+            i.get_capture(0)
+            i.assert_nothing_captured(remark=remark)
+
+    def test_ip_disabled(self):
+        """ IP Disabled """
+
+        #
+        # An (S,G).
+        # one accepting interface, pg0, 2 forwarding interfaces
+        #
+        route_232_1_1_1 = VppIpMRoute(
+            self,
+            "0.0.0.0",
+            "232.1.1.1", 32,
+            MRouteEntryFlags.MFIB_ENTRY_FLAG_NONE,
+            [VppMRoutePath(self.pg1.sw_if_index,
+                           MRouteItfFlags.MFIB_ITF_FLAG_ACCEPT),
+             VppMRoutePath(self.pg0.sw_if_index,
+                           MRouteItfFlags.MFIB_ITF_FLAG_FORWARD)])
+        route_232_1_1_1.add_vpp_config()
+
+        pu = (Ether(src=self.pg1.remote_mac,
+                    dst=self.pg1.local_mac) /
+              IP(src="10.10.10.10", dst=self.pg0.remote_ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))
+        pm = (Ether(src=self.pg1.remote_mac,
+                    dst=self.pg1.local_mac) /
+              IP(src="10.10.10.10", dst="232.1.1.1") /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))
+
+        #
+        # PG1 does not forward IP traffic
+        #
+        self.send_and_assert_no_replies(self.pg1, pu, "IP disabled")
+        self.send_and_assert_no_replies(self.pg1, pm, "IP disabled")
+
+        #
+        # IP enable PG1
+        #
+        self.pg1.config_ip4()
+
+        #
+        # Now we get packets through
+        #
+        self.pg1.add_stream(pu)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg0.get_capture(1)
+
+        self.pg1.add_stream(pm)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg0.get_capture(1)
+
+        #
+        # Disable PG1
+        #
+        self.pg1.unconfig_ip4()
+
+        #
+        # PG1 does not forward IP traffic
+        #
+        self.send_and_assert_no_replies(self.pg1, pu, "IP disabled")
+        self.send_and_assert_no_replies(self.pg1, pm, "IP disabled")
+
+
+class TestIPSubNets(VppTestCase):
+    """ IPv4 Subnets """
+
+    def setUp(self):
+        super(TestIPSubNets, self).setUp()
+
+        # create a 2 pg interfaces
+        self.create_pg_interfaces(range(2))
+
+        # pg0 we will use to experiemnt
+        self.pg0.admin_up()
+
+        # pg1 is setup normally
+        self.pg1.admin_up()
+        self.pg1.config_ip4()
+        self.pg1.resolve_arp()
+
+    def tearDown(self):
+        super(TestIPSubNets, self).tearDown()
+        for i in self.pg_interfaces:
+            i.admin_down()
+
+    def send_and_assert_no_replies(self, intf, pkts, remark):
+        intf.add_stream(pkts)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        for i in self.pg_interfaces:
+            i.get_capture(0)
+            i.assert_nothing_captured(remark=remark)
+
+    def test_ip_sub_nets(self):
+        """ IP Sub Nets """
+
+        #
+        # Configure a covering route to forward so we know
+        # when we are dropping
+        #
+        cover_route = VppIpRoute(self, "10.0.0.0", 8,
+                                 [VppRoutePath(self.pg1.remote_ip4,
+                                               self.pg1.sw_if_index)])
+        cover_route.add_vpp_config()
+
+        p = (Ether(src=self.pg1.remote_mac,
+                   dst=self.pg1.local_mac) /
+             IP(dst="10.10.10.10", src=self.pg0.local_ip4) /
+             UDP(sport=1234, dport=1234) /
+             Raw('\xa5' * 100))
+
+        self.pg1.add_stream(p)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(1)
+
+        #
+        # Configure some non-/24 subnets on an IP interface
+        #
+        ip_addr_n = socket.inet_pton(socket.AF_INET, "10.10.10.10")
+
+        self.vapi.sw_interface_add_del_address(self.pg0.sw_if_index,
+                                               ip_addr_n,
+                                               16)
+
+        pn = (Ether(src=self.pg1.remote_mac,
+                    dst=self.pg1.local_mac) /
+              IP(dst="10.10.0.0", src=self.pg0.local_ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))
+        pb = (Ether(src=self.pg1.remote_mac,
+                    dst=self.pg1.local_mac) /
+              IP(dst="10.10.255.255", src=self.pg0.local_ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))
+
+        self.send_and_assert_no_replies(self.pg1, pn, "IP Network address")
+        self.send_and_assert_no_replies(self.pg1, pb, "IP Broadcast address")
+
+        # remove the sub-net and we are forwarding via the cover again
+        self.vapi.sw_interface_add_del_address(self.pg0.sw_if_index,
+                                               ip_addr_n,
+                                               16,
+                                               is_add=0)
+        self.pg1.add_stream(pn)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(1)
+        self.pg1.add_stream(pb)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(1)
+
+        #
+        # A /31 is a special case where the 'other-side' is an attached host
+        # packets to that peer generate ARP requests
+        #
+        ip_addr_n = socket.inet_pton(socket.AF_INET, "10.10.10.10")
+
+        self.vapi.sw_interface_add_del_address(self.pg0.sw_if_index,
+                                               ip_addr_n,
+                                               31)
+
+        pn = (Ether(src=self.pg1.remote_mac,
+                    dst=self.pg1.local_mac) /
+              IP(dst="10.10.10.11", src=self.pg0.local_ip4) /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))
+
+        self.pg1.add_stream(pn)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg0.get_capture(1)
+        rx[ARP]
+
+        # remove the sub-net and we are forwarding via the cover again
+        self.vapi.sw_interface_add_del_address(self.pg0.sw_if_index,
+                                               ip_addr_n,
+                                               31,
+                                               is_add=0)
+        self.pg1.add_stream(pn)
+        self.pg_enable_capture(self.pg_interfaces)
+        self.pg_start()
+        rx = self.pg1.get_capture(1)
 
 
 if __name__ == '__main__':

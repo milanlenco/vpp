@@ -62,24 +62,24 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
 		    u32 sw_if_index, u8 traffic_type)
 {
   ip6_sr_main_t *sm = &sr_main;
-  sr_steering_key_t key, *key_copy;
+  sr_steering_key_t key;
   ip6_sr_steering_policy_t *steer_pl;
   fib_prefix_t pfx = { 0 };
 
   ip6_sr_policy_t *sr_policy = 0;
   uword *p = 0;
 
-  hash_pair_t *hp;
+  memset (&key, 0, sizeof (sr_steering_key_t));
 
   /* Compute the steer policy key */
-  if (prefix)
+  if (traffic_type == SR_STEER_IPV4 || traffic_type == SR_STEER_IPV6)
     {
       key.l3.prefix.as_u64[0] = prefix->as_u64[0];
       key.l3.prefix.as_u64[1] = prefix->as_u64[1];
       key.l3.mask_width = mask_width;
       key.l3.fib_table = (table_id != (u32) ~ 0 ? table_id : 0);
     }
-  else
+  else if (traffic_type == SR_STEER_L2)
     {
       key.l2.sw_if_index = sw_if_index;
 
@@ -93,11 +93,13 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
       if (sw->type != VNET_SW_INTERFACE_TYPE_HARDWARE)
 	return -3;
     }
+  else
+    return -1;
 
   key.traffic_type = traffic_type;
 
   /* Search for the item */
-  p = hash_get_mem (sm->steer_policies_index_by_key, &key);
+  p = mhash_get (&sm->sr_steer_policies_hash, &key);
 
   if (p)
     {
@@ -152,10 +154,17 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
 
 	  /* Delete SR steering policy entry */
 	  pool_put (sm->steer_policies, steer_pl);
-	  hp = hash_get_pair (sm->steer_policies_index_by_key, &key);
-	  key_copy = (void *) (hp->key);
-	  hash_unset_mem (sm->steer_policies_index_by_key, &key);
-	  vec_free (key_copy);
+	  mhash_unset (&sm->sr_steer_policies_hash, &key, NULL);
+
+	  /* If no more SR policies or steering policies */
+	  if (!pool_elts (sm->sr_policies) && !pool_elts (sm->steer_policies))
+	    {
+	      fib_table_unlock (sm->fib_table_ip6, FIB_PROTOCOL_IP6);
+	      fib_table_unlock (sm->fib_table_ip4, FIB_PROTOCOL_IP6);
+	      sm->fib_table_ip6 = (u32) ~ 0;
+	      sm->fib_table_ip4 = (u32) ~ 0;
+	    }
+
 	  return 1;
 	}
       else			/* It means user requested to update an existing SR steering policy */
@@ -163,7 +172,7 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
 	  /* Retrieve SR steering policy */
 	  if (bsid)
 	    {
-	      p = hash_get_mem (sm->sr_policy_index_by_key, bsid);
+	      p = mhash_get (&sm->sr_policies_index_hash, bsid);
 	      if (p)
 		sr_policy = pool_elt_at_index (sm->sr_policies, p[0]);
 	      else
@@ -192,7 +201,6 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
 
 	      /* Create a new one */
 	      goto update_fib;
-
 	    }
 	  else if (steer_pl->classify.traffic_type == SR_STEER_IPV4)
 	    {
@@ -224,7 +232,7 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
   /* Retrieve SR policy */
   if (bsid)
     {
-      p = hash_get_mem (sm->sr_policy_index_by_key, bsid);
+      p = mhash_get (&sm->sr_policies_index_hash, bsid);
       if (p)
 	sr_policy = pool_elt_at_index (sm->sr_policies, p[0]);
       else
@@ -255,19 +263,14 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
     {
       /* Incorrect API usage. Should never get here */
       pool_put (sm->steer_policies, steer_pl);
-      hp = hash_get_pair (sm->steer_policies_index_by_key, &key);
-      key_copy = (void *) (hp->key);
-      hash_unset_mem (sm->steer_policies_index_by_key, &key);
-      vec_free (key_copy);
+      mhash_unset (&sm->sr_steer_policies_hash, &key, NULL);
       return -1;
     }
   steer_pl->sr_policy = sr_policy - sm->sr_policies;
 
   /* Create and store key */
-  key_copy = vec_new (sr_steering_key_t, 1);
-  clib_memcpy (key_copy, &key, sizeof (sr_steering_key_t));
-  hash_set_mem (sm->steer_policies_index_by_key,
-		key_copy, steer_pl - sm->steer_policies);
+  mhash_set (&sm->sr_steer_policies_hash, &key, steer_pl - sm->steer_policies,
+	     NULL);
 
   if (traffic_type == SR_STEER_L2)
     {
@@ -275,8 +278,7 @@ sr_steering_policy (int is_del, ip6_address_t * bsid, u32 sr_policy_index,
 	goto cleanup_error_encap;
 
       if (vnet_feature_enable_disable
-	  ("device-input", "sr-policy-rewrite-encaps-l2", sw_if_index, 1, 0,
-	   0))
+	  ("device-input", "sr-pl-rewrite-encaps-l2", sw_if_index, 1, 0, 0))
 	goto cleanup_error_redirection;
 
       /* Set promiscous mode on interface */
@@ -306,7 +308,8 @@ update_fib:
 							     (table_id !=
 							      (u32) ~ 0 ?
 							      table_id : 0)),
-				&pfx, FIB_SOURCE_CLI, FIB_ENTRY_FLAG_NONE,
+				&pfx, FIB_SOURCE_SR,
+				FIB_ENTRY_FLAG_LOOSE_URPF_EXEMPT,
 				FIB_PROTOCOL_IP6,
 				(ip46_address_t *) & sr_policy->bsid, ~0,
 				sm->fib_table_ip6, 1, NULL,
@@ -322,7 +325,8 @@ update_fib:
 							     (table_id !=
 							      (u32) ~ 0 ?
 							      table_id : 0)),
-				&pfx, FIB_SOURCE_CLI, FIB_ENTRY_FLAG_NONE,
+				&pfx, FIB_SOURCE_SR,
+				FIB_ENTRY_FLAG_LOOSE_URPF_EXEMPT,
 				FIB_PROTOCOL_IP6,
 				(ip46_address_t *) & sr_policy->bsid, ~0,
 				sm->fib_table_ip4, 1, NULL,
@@ -345,18 +349,12 @@ update_fib:
 
 cleanup_error_encap:
   pool_put (sm->steer_policies, steer_pl);
-  hp = hash_get_pair (sm->steer_policies_index_by_key, &key);
-  key_copy = (void *) (hp->key);
-  hash_unset_mem (sm->steer_policies_index_by_key, &key);
-  vec_free (key_copy);
+  mhash_unset (&sm->sr_steer_policies_hash, &key, NULL);
   return -5;
 
 cleanup_error_redirection:
   pool_put (sm->steer_policies, steer_pl);
-  hp = hash_get_pair (sm->steer_policies_index_by_key, &key);
-  key_copy = (void *) (hp->key);
-  hash_unset_mem (sm->steer_policies_index_by_key, &key);
-  vec_free (key_copy);
+  mhash_unset (&sm->sr_steer_policies_hash, &key, NULL);
   return -3;
 }
 
@@ -378,6 +376,8 @@ sr_steer_policy_command_fn (vlib_main_t * vm, unformat_input_t * input,
   u32 sr_policy_index = (u32) ~ 0;
 
   u8 sr_policy_set = 0;
+
+  memset (&prefix, 0, sizeof (ip46_address_t));
 
   int rv;
   while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
@@ -450,7 +450,7 @@ sr_steer_policy_command_fn (vlib_main_t * vm, unformat_input_t * input,
 				"Unable to do SW redirect. Incorrect interface.");
     case -4:
       return clib_error_return (0,
-				"The requested SR policy could not be deleted. Review the BSID/index.");
+				"The requested SR steering policy could not be deleted.");
     case -5:
       return clib_error_return (0,
 				"The SR policy is not an encapsulation one.");
@@ -541,8 +541,8 @@ sr_steering_init (vlib_main_t * vm)
   ip6_sr_main_t *sm = &sr_main;
 
   /* Init memory for function keys */
-  sm->steer_policies_index_by_key =
-    hash_create_mem (0, sizeof (sr_steering_key_t), sizeof (uword));
+  mhash_init (&sm->sr_steer_policies_hash, sizeof (uword),
+	      sizeof (sr_steering_key_t));
 
   sm->sw_iface_sr_policies = 0;
 
@@ -551,13 +551,18 @@ sr_steering_init (vlib_main_t * vm)
   return 0;
 }
 
+/* *INDENT-OFF* */
 VLIB_INIT_FUNCTION (sr_steering_init);
+/* *INDENT-ON* */
 
-VNET_FEATURE_INIT (sr_policy_rewrite_encaps_l2, static) =
+/* *INDENT-OFF* */
+VNET_FEATURE_INIT (sr_pl_rewrite_encaps_l2, static) =
 {
-.arc_name = "device-input",.node_name =
-    "sr-pl-rewrite-encaps-l2",.runs_before =
-    VNET_FEATURES ("ethernet-input"),};
+  .arc_name = "device-input",
+  .node_name = "sr-pl-rewrite-encaps-l2",
+  .runs_before = VNET_FEATURES ("ethernet-input"),
+};
+/* *INDENT-ON* */
 
 /*
 * fd.io coding-style-patch-verification: ON

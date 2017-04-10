@@ -19,9 +19,7 @@ libvnet_la_DEPENDENCIES = \
 	libvlib.la		\
 	libsvmdb.la		\
 	libsvm.la 		\
-	libvlibapi.la		\
-	libvlibmemory.la	\
-	libvlibmemoryclient.la
+	libvlibmemory.la
 
 libvnet_la_LIBADD = $(libvnet_la_DEPENDENCIES) -lm -lpthread -ldl -lrt
 
@@ -42,8 +40,7 @@ libvnet_la_SOURCES +=				\
   vnet/interface_format.c			\
   vnet/interface_output.c			\
   vnet/misc.c					\
-  vnet/replication.c				\
-  vnet/rewrite.c
+  vnet/replication.c
 
 nobase_include_HEADERS +=			\
   vnet/api_errno.h				\
@@ -58,7 +55,6 @@ nobase_include_HEADERS +=			\
   vnet/l3_types.h				\
   vnet/pipeline.h				\
   vnet/replication.h				\
-  vnet/rewrite.h				\
   vnet/vnet.h					\
   vnet/vnet_all_api_h.h				\
   vnet/vnet_msg_enum.h				\
@@ -447,8 +443,7 @@ test_map_SOURCES =                             \
 test_map_CPPFLAGS = $(AM_CPPFLAGS) -DCLIB_DEBUG
 
 test_map_LDADD = libvnet.la libvppinfra.la libvlib.la	\
-  -lpthread -lvlibmemory -lvlibapi \
-  -ldl -lsvm -lrt
+  -lpthread -lvlibmemory -ldl -lsvm -lrt
 
 test_map_LDFLAGS = -static
 endif
@@ -463,12 +458,15 @@ libvnet_la_SOURCES +=				\
  vnet/tcp/tcp_output.c				\
  vnet/tcp/tcp_input.c				\
  vnet/tcp/tcp_newreno.c				\
+ vnet/tcp/builtin_client.c			\
  vnet/tcp/builtin_server.c			\
+ vnet/tcp/tcp_test.c				\
  vnet/tcp/tcp.c
 
 nobase_include_HEADERS +=			\
  vnet/tcp/tcp_packet.h				\
  vnet/tcp/tcp_timer.h				\
+ vnet/tcp/tcp_debug.h				\
  vnet/tcp/tcp.h
 
 ########################################
@@ -530,7 +528,7 @@ libvnet_la_SOURCES +=				\
  vnet/mpls/mpls_lookup.c			\
  vnet/mpls/mpls_output.c			\
  vnet/mpls/mpls_features.c			\
- vnet/mpls/node.c				\
+ vnet/mpls/mpls_input.c				\
  vnet/mpls/interface.c			        \
  vnet/mpls/mpls_tunnel.c		        \
  vnet/mpls/pg.c			        \
@@ -616,7 +614,6 @@ LDS = \
   libvlib.la  \
   libsvm.la \
   libsvmdb.la \
-  libvlibapi.la \
   libvlibmemory.la \
   -lpthread -ldl -lrt -lm
 
@@ -837,6 +834,7 @@ nobase_include_HEADERS +=			\
   vnet/session/application.h			\
   vnet/session/transport.h			\
   vnet/session/application_interface.h		\
+  vnet/session/session_debug.h			\
   vnet/session/session.api.h
 
 API_FILES += vnet/session/session.api
@@ -938,7 +936,8 @@ libvnet_la_SOURCES +=				\
   vnet/fib/fib_path.c				\
   vnet/fib/fib_path_ext.c			\
   vnet/fib/fib_urpf_list.c			\
-  vnet/fib/fib_attached_export.c
+  vnet/fib/fib_attached_export.c		\
+  vnet/fib/fib_bfd.c
 
 nobase_include_HEADERS +=			\
   vnet/fib/fib.h				\
@@ -963,14 +962,18 @@ libvnet_la_SOURCES +=				\
   vnet/adj/adj_mcast.c   			\
   vnet/adj/adj_l2.c      			\
   vnet/adj/adj_nsh.c      			\
-  vnet/adj/adj.c
+  vnet/adj/adj.c		                \
+  vnet/adj/rewrite.c				\
+  vnet/adj/adj_bfd.c				\
+  vnet/adj/adj_delegate.c
 
 nobase_include_HEADERS +=			\
   vnet/adj/adj.h				\
   vnet/adj/adj_types.h				\
   vnet/adj/adj_glean.h  			\
   vnet/adj/adj_nsh.h  				\
-  vnet/adj/adj_nbr.h
+  vnet/adj/adj_nbr.h 				\
+  vnet/adj/rewrite.h
 
 ########################################
 # Data-Plane Objects
@@ -987,6 +990,8 @@ libvnet_la_SOURCES +=				\
   vnet/dpo/lookup_dpo.c   			\
   vnet/dpo/classify_dpo.c   			\
   vnet/dpo/replicate_dpo.c   			\
+  vnet/dpo/interface_dpo.c   			\
+  vnet/dpo/mpls_disposition.c   		\
   vnet/dpo/mpls_label_dpo.c
 
 nobase_include_HEADERS +=			\

@@ -18,6 +18,7 @@
 #include <vnet/vnet.h>
 #include <vnet/pg/pg.h>
 #include <vnet/mpls/mpls.h>
+#include <vnet/fib/mpls_fib.h>
 #include <vnet/fib/ip4_fib.h>
 #include <vnet/adj/adj_midchain.h>
 #include <vnet/dpo/classify_dpo.h>
@@ -66,8 +67,8 @@ mpls_sw_interface_enable_disable (mpls_main_t * mm,
 		       FIB_PROTOCOL_MPLS);
     }
 
-  vnet_feature_enable_disable ("mpls-input", "mpls-lookup", sw_if_index,
-			       is_enable, 0, 0);
+  vnet_feature_enable_disable ("mpls-input", "mpls-not-enabled",
+                               sw_if_index, !is_enable, 0, 0);
 
 }
 

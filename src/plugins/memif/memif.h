@@ -15,6 +15,8 @@
  *------------------------------------------------------------------
  */
 
+#include <vppinfra/lock.h>
+
 typedef struct
 {
   u16 version;
@@ -98,7 +100,7 @@ typedef struct
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  volatile u32 *lockp;
+  clib_spinlock_t lockp;
   u32 flags;
 #define MEMIF_IF_FLAG_ADMIN_UP   (1 << 0)
 #define MEMIF_IF_FLAG_IS_SLAVE   (1 << 1)
@@ -194,6 +196,7 @@ typedef struct
 
 int memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args);
 int memif_delete_if (vlib_main_t * vm, u64 key);
+void memif_disconnect (vlib_main_t * vm, memif_if_t * mif);
 clib_error_t *memif_plugin_api_hookup (vlib_main_t * vm);
 
 #ifndef __NR_memfd_create

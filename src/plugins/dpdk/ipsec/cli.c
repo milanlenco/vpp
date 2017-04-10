@@ -42,8 +42,8 @@ dpdk_ipsec_show_mapping (vlib_main_t * vm, u16 detail_display)
   for (i = 0; i < tm->n_vlib_mains; i++)
     {
       uword key, data;
-      u32 cpu_index = vlib_mains[i]->cpu_index;
-      crypto_worker_main_t *cwm = &dcm->workers_main[cpu_index];
+      u32 thread_index = vlib_mains[i]->thread_index;
+      crypto_worker_main_t *cwm = &dcm->workers_main[thread_index];
       u8 *s = 0;
 
       if (skip_master)
@@ -57,7 +57,7 @@ dpdk_ipsec_show_mapping (vlib_main_t * vm, u16 detail_display)
 	  i32 last_cdev = -1;
 	  crypto_qp_data_t *qpd;
 
-	  s = format (s, "%u\t", cpu_index);
+	  s = format (s, "%u\t", thread_index);
 
 	  /* *INDENT-OFF* */
 	  vec_foreach (qpd, cwm->qp_data)
@@ -95,7 +95,7 @@ dpdk_ipsec_show_mapping (vlib_main_t * vm, u16 detail_display)
 	    cap.sym.auth.algo = p_key->auth_algo;
 	    check_algo_is_supported (&cap, auth_str);
 	    vlib_cli_output (vm, "%u\t%10s\t%15s\t%3s\t%u\t%u\n",
-			     vlib_mains[i]->cpu_index, cipher_str, auth_str,
+			     vlib_mains[i]->thread_index, cipher_str, auth_str,
 			     p_key->is_outbound ? "out" : "in",
 			     cwm->qp_data[data].dev_id,
 			     cwm->qp_data[data].qp_id);
@@ -136,11 +136,72 @@ done:
   return error;
 }
 
+/*?
+ * This command is used to display the DPDK Crypto device data. See
+ * @ref dpdk_crypto_ipsec_doc for more details on initializing the
+ * DPDK Crypto device.
+ *
+ * @cliexpar
+ * Example of displaying the DPDK Crypto device data when disabled:
+ * @cliexstart{show crypto device mapping}
+ * DPDK Cryptodev support is disabled
+ * @cliexend
+ * Example of displaying the DPDK Crypto device data when enabled:
+ * @cliexstart{show crypto device mapping}
+ * worker  crypto device id(type)
+ * 1       1(SW)
+ * 2       1(SW)
+ * @cliexend
+ * Example of displaying the DPDK Crypto device data when enabled with verbose:
+ * @cliexstart{show crypto device mapping verbose}
+ * worker      cipher                 auth dir     dev     qp
+ * 1          AES_CTR         AES-XCBC-MAC  in     1       0
+ * 1          AES_CTR          HMAC-SHA384  in     1       0
+ * 1          AES_CTR          HMAC-SHA384 out     1       1
+ * 1          AES_CBC          HMAC-SHA512  in     1       0
+ * 1          AES_CBC          HMAC-SHA256  in     1       0
+ * 1          AES_CBC         AES-XCBC-MAC out     1       1
+ * 1          AES_CTR         AES-XCBC-MAC out     1       1
+ * 1          AES_CBC          HMAC-SHA256 out     1       1
+ * 1          AES_CTR          HMAC-SHA512 out     1       1
+ * 1          AES_CTR          HMAC-SHA256  in     1       0
+ * 1          AES_CTR            HMAC-SHA1  in     1       0
+ * 1          AES_CBC          HMAC-SHA512 out     1       1
+ * 1          AES_CBC          HMAC-SHA384 out     1       1
+ * 1          AES_CTR            HMAC-SHA1 out     1       1
+ * 1          AES_CTR          HMAC-SHA256 out     1       1
+ * 1          AES_CBC            HMAC-SHA1  in     1       0
+ * 1          AES_CBC         AES-XCBC-MAC  in     1       0
+ * 1          AES_CTR          HMAC-SHA512  in     1       0
+ * 1          AES_CBC            HMAC-SHA1 out     1       1
+ * 1          AES_CBC          HMAC-SHA384  in     1       0
+ * 2          AES_CTR         AES-XCBC-MAC  in     1       2
+ * 2          AES_CTR          HMAC-SHA384  in     1       2
+ * 2          AES_CTR          HMAC-SHA384 out     1       3
+ * 2          AES_CBC          HMAC-SHA512  in     1       2
+ * 2          AES_CBC          HMAC-SHA256  in     1       2
+ * 2          AES_CBC         AES-XCBC-MAC out     1       3
+ * 2          AES_CTR         AES-XCBC-MAC out     1       3
+ * 2          AES_CBC          HMAC-SHA256 out     1       3
+ * 2          AES_CTR          HMAC-SHA512 out     1       3
+ * 2          AES_CTR          HMAC-SHA256  in     1       2
+ * 2          AES_CTR            HMAC-SHA1  in     1       2
+ * 2          AES_CBC          HMAC-SHA512 out     1       3
+ * 2          AES_CBC          HMAC-SHA384 out     1       3
+ * 2          AES_CTR            HMAC-SHA1 out     1       3
+ * 2          AES_CTR          HMAC-SHA256 out     1       3
+ * 2          AES_CBC            HMAC-SHA1  in     1       2
+ * 2          AES_CBC         AES-XCBC-MAC  in     1       2
+ * 2          AES_CTR          HMAC-SHA512  in     1       2
+ * 2          AES_CBC            HMAC-SHA1 out     1       3
+ * 2          AES_CBC          HMAC-SHA384  in     1       2
+ * @cliexend
+?*/
 /* *INDENT-OFF* */
 VLIB_CLI_COMMAND (lcore_cryptodev_map, static) = {
     .path = "show crypto device mapping",
     .short_help =
-    "show cryptodev device mapping <verbose>",
+    "show cryptodev device mapping [verbose]",
     .function = lcore_cryptodev_map_fn,
 };
 /* *INDENT-ON* */

@@ -86,7 +86,22 @@ typedef struct
   /* mac aging */
   u8 mac_age;
 
+  /* sequence number for bridge domain based flush of MACs */
+  u8 seq_num;
+
 } l2_bridge_domain_t;
+
+typedef struct
+{
+  u32 bd_id;
+  u8 flood;
+  u8 uu_flood;
+  u8 forward;
+  u8 learn;
+  u8 arp_term;
+  u8 mac_age;
+  u8 is_add;
+} l2_bridge_domain_add_del_args_t;
 
 /* Return 1 if bridge domain has been initialized */
 always_inline u32

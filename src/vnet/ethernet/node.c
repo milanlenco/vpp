@@ -249,7 +249,7 @@ determine_next_node (ethernet_main_t * em,
     {
       *next0 = em->l3_next.input_next_ip6;
     }
-  else if (type0 == ETHERNET_TYPE_MPLS_UNICAST)
+  else if (type0 == ETHERNET_TYPE_MPLS)
     {
       *next0 = em->l3_next.input_next_mpls;
 
@@ -291,9 +291,10 @@ ethernet_input_inline (vlib_main_t * vm,
   vlib_node_runtime_t *error_node;
   u32 n_left_from, next_index, *from, *to_next;
   u32 stats_sw_if_index, stats_n_packets, stats_n_bytes;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
   u32 cached_sw_if_index = ~0;
   u32 cached_is_l2 = 0;		/* shut up gcc */
+  vnet_hw_interface_t *hi = NULL;	/* used for main interface only */
 
   if (variant != ETHERNET_INPUT_VARIANT_ETHERNET)
     error_node = vlib_node_get_runtime (vm, ethernet_input_node.index);
@@ -386,11 +387,12 @@ ethernet_input_inline (vlib_main_t * vm,
 	      if (PREDICT_FALSE (sw_if_index0 != sw_if_index1))
 		goto slowpath;
 
+	      /* Now sw_if_index0 == sw_if_index1  */
 	      if (PREDICT_FALSE (cached_sw_if_index != sw_if_index0))
 		{
 		  cached_sw_if_index = sw_if_index0;
-		  hi0 = vnet_get_sup_hw_interface (vnm, sw_if_index0);
-		  intf0 = vec_elt_at_index (em->main_intfs, hi0->hw_if_index);
+		  hi = vnet_get_sup_hw_interface (vnm, sw_if_index0);
+		  intf0 = vec_elt_at_index (em->main_intfs, hi->hw_if_index);
 		  subint0 = &intf0->untagged_subint;
 		  cached_is_l2 = is_l20 = subint0->flags & SUBINT_CONFIG_L2;
 		}
@@ -409,6 +411,12 @@ ethernet_input_inline (vlib_main_t * vm,
 		}
 	      else
 		{
+		  if (!ethernet_address_cast (e0->dst_address) &&
+		      !eth_mac_equal ((u8 *) e0, hi->hw_address))
+		    error0 = ETHERNET_ERROR_L3_MAC_MISMATCH;
+		  if (!ethernet_address_cast (e1->dst_address) &&
+		      !eth_mac_equal ((u8 *) e1, hi->hw_address))
+		    error1 = ETHERNET_ERROR_L3_MAC_MISMATCH;
 		  determine_next_node (em, variant, 0, type0, b0,
 				       &error0, &next0);
 		  vlib_buffer_advance (b0, sizeof (ethernet_header_t));
@@ -502,7 +510,7 @@ ethernet_input_inline (vlib_main_t * vm,
 						     interface_main.combined_sw_if_counters
 						     +
 						     VNET_INTERFACE_COUNTER_RX,
-						     cpu_index,
+						     thread_index,
 						     new_sw_if_index0, 1,
 						     len0);
 		  if (new_sw_if_index1 != old_sw_if_index1
@@ -511,7 +519,7 @@ ethernet_input_inline (vlib_main_t * vm,
 						     interface_main.combined_sw_if_counters
 						     +
 						     VNET_INTERFACE_COUNTER_RX,
-						     cpu_index,
+						     thread_index,
 						     new_sw_if_index1, 1,
 						     len1);
 
@@ -522,7 +530,7 @@ ethernet_input_inline (vlib_main_t * vm,
 			  vlib_increment_combined_counter
 			    (vnm->interface_main.combined_sw_if_counters
 			     + VNET_INTERFACE_COUNTER_RX,
-			     cpu_index,
+			     thread_index,
 			     stats_sw_if_index,
 			     stats_n_packets, stats_n_bytes);
 			  stats_n_packets = stats_n_bytes = 0;
@@ -540,10 +548,10 @@ ethernet_input_inline (vlib_main_t * vm,
 	  determine_next_node (em, variant, is_l21, type1, b1, &error1,
 			       &next1);
 
+	ship_it01:
 	  b0->error = error_node->errors[error0];
 	  b1->error = error_node->errors[error1];
 
-	ship_it01:
 	  // verify speculative enqueue
 	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, bi1, next0,
@@ -603,8 +611,8 @@ ethernet_input_inline (vlib_main_t * vm,
 	      if (PREDICT_FALSE (cached_sw_if_index != sw_if_index0))
 		{
 		  cached_sw_if_index = sw_if_index0;
-		  hi0 = vnet_get_sup_hw_interface (vnm, sw_if_index0);
-		  intf0 = vec_elt_at_index (em->main_intfs, hi0->hw_if_index);
+		  hi = vnet_get_sup_hw_interface (vnm, sw_if_index0);
+		  intf0 = vec_elt_at_index (em->main_intfs, hi->hw_if_index);
 		  subint0 = &intf0->untagged_subint;
 		  cached_is_l2 = is_l20 = subint0->flags & SUBINT_CONFIG_L2;
 		}
@@ -619,6 +627,9 @@ ethernet_input_inline (vlib_main_t * vm,
 		}
 	      else
 		{
+		  if (!ethernet_address_cast (e0->dst_address) &&
+		      !eth_mac_equal ((u8 *) e0, hi->hw_address))
+		    error0 = ETHERNET_ERROR_L3_MAC_MISMATCH;
 		  determine_next_node (em, variant, 0, type0, b0,
 				       &error0, &next0);
 		  vlib_buffer_advance (b0, sizeof (ethernet_header_t));
@@ -685,13 +696,13 @@ ethernet_input_inline (vlib_main_t * vm,
 		    vlib_increment_combined_counter
 		      (vnm->interface_main.combined_sw_if_counters
 		       + VNET_INTERFACE_COUNTER_RX,
-		       cpu_index, new_sw_if_index0, 1, len0);
+		       thread_index, new_sw_if_index0, 1, len0);
 		  if (stats_n_packets > 0)
 		    {
 		      vlib_increment_combined_counter
 			(vnm->interface_main.combined_sw_if_counters
 			 + VNET_INTERFACE_COUNTER_RX,
-			 cpu_index,
+			 thread_index,
 			 stats_sw_if_index, stats_n_packets, stats_n_bytes);
 		      stats_n_packets = stats_n_bytes = 0;
 		    }
@@ -705,10 +716,10 @@ ethernet_input_inline (vlib_main_t * vm,
 	  determine_next_node (em, variant, is_l20, type0, b0, &error0,
 			       &next0);
 
+	ship_it0:
 	  b0->error = error_node->errors[error0];
 
 	  // verify speculative enqueue
-	ship_it0:
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
 					   to_next, n_left_to_next,
 					   bi0, next0);
@@ -723,7 +734,7 @@ ethernet_input_inline (vlib_main_t * vm,
       vlib_increment_combined_counter
 	(vnm->interface_main.combined_sw_if_counters
 	 + VNET_INTERFACE_COUNTER_RX,
-	 cpu_index, stats_sw_if_index, stats_n_packets, stats_n_bytes);
+	 thread_index, stats_sw_if_index, stats_n_packets, stats_n_bytes);
       node->runtime_data[0] = stats_sw_if_index;
     }
 
@@ -1241,7 +1252,7 @@ next_by_ethertype_register (next_by_ethertype_t * l3_next,
 	{
 	  l3_next->input_next_ip6 = next_index;
 	}
-      else if (ethertype == ETHERNET_TYPE_MPLS_UNICAST)
+      else if (ethertype == ETHERNET_TYPE_MPLS)
 	{
 	  l3_next->input_next_mpls = next_index;
 	}

@@ -1887,7 +1887,7 @@ done:
   vlib_increment_combined_counter (vnet_main.
 				   interface_main.combined_sw_if_counters +
 				   VNET_INTERFACE_COUNTER_RX,
-				   0 /* cpu_index */ ,
+				   0 /* thread_index */ ,
 				   xd->vlib_sw_if_index, n_packets,
 				   dq->rx.n_bytes);
 
@@ -2935,6 +2935,7 @@ ixge_set_next_node (ixge_rx_next_t next, char *name)
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
     .default_disabled = 1,
+    .description = "Intel 82599 Family Native Driver (experimental)",
 };
 
 /* *INDENT-ON* */

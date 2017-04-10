@@ -90,6 +90,28 @@ typedef struct tunnel_lookup
   uword *vni_by_sw_if_index;
 } tunnel_lookup_t;
 
+typedef struct
+{
+  u32 fwd_entry_index;
+  u32 tunnel_index;
+} lisp_stats_key_t;
+
+typedef struct
+{
+  u32 pkt_count;
+  u32 bytes;
+} lisp_stats_t;
+
+typedef struct
+{
+  u32 vni;
+  dp_address_t deid;
+  dp_address_t seid;
+  ip_address_t loc_rloc;
+  ip_address_t rmt_rloc;
+
+  lisp_stats_t stats;
+} lisp_api_stats_t;
 
 typedef enum gpe_encap_mode_e
 {
@@ -142,6 +164,9 @@ typedef struct lisp_gpe_main
   const dpo_id_t *nsh_cp_lkup;
 
   gpe_encap_mode_t encap_mode;
+
+  lisp_stats_t *lisp_stats_pool;
+  uword *lisp_stats_index_by_key;
 
   /** convenience */
   vlib_main_t *vlib_main;
@@ -201,6 +226,8 @@ typedef enum
 /** */
 typedef struct
 {
+  u8 is_src_dst;
+
   u8 is_add;
 
   /** type of mapping */
@@ -237,7 +264,7 @@ typedef struct
     u32 table_id;
 
     /** bridge domain id */
-    u16 bd_id;
+    u32 bd_id;
 
     /** generic access */
     u32 dp_table;
@@ -282,6 +309,11 @@ u8 *format_vnet_lisp_gpe_status (u8 * s, va_list * args);
 lisp_api_gpe_fwd_entry_t *vnet_lisp_gpe_fwd_entries_get_by_vni (u32 vni);
 gpe_encap_mode_t vnet_gpe_get_encap_mode (void);
 int vnet_gpe_set_encap_mode (gpe_encap_mode_t mode);
+
+u8 vnet_lisp_stats_enable_disable_state (void);
+vnet_api_error_t vnet_lisp_stats_enable_disable (u8 enable);
+lisp_api_stats_t *vnet_lisp_get_stats (void);
+void vnet_lisp_flush_stats (void);
 
 #endif /* included_vnet_lisp_gpe_h */
 

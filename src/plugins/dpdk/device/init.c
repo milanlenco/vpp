@@ -324,7 +324,7 @@ dpdk_port_setup (dpdk_main_t * dm, dpdk_device_t * xd)
   int rv;
   int j;
 
-  ASSERT (os_get_cpu_number () == 0);
+  ASSERT (vlib_get_thread_index () == 0);
 
   if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
     {
@@ -419,56 +419,35 @@ dpdk_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
     }
   else if (ETHERNET_INTERFACE_FLAG_CONFIG_MTU (flags))
     {
-      /*
-       * DAW-FIXME: The Cisco VIC firmware does not provide an api for a
-       *            driver to dynamically change the mtu.  If/when the
-       *            VIC firmware gets fixed, then this should be removed.
-       */
-      if (xd->pmd == VNET_DPDK_PMD_ENIC)
+      int rv;
+
+      xd->port_conf.rxmode.max_rx_pkt_len = hi->max_packet_bytes;
+
+      if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
+	rte_eth_dev_stop (xd->device_index);
+
+      rv = rte_eth_dev_configure
+	(xd->device_index, xd->rx_q_used, xd->tx_q_used, &xd->port_conf);
+
+      if (rv < 0)
+	vlib_cli_output (vlib_get_main (),
+			 "rte_eth_dev_configure[%d]: err %d",
+			 xd->device_index, rv);
+
+      rte_eth_dev_set_mtu (xd->device_index, hi->max_packet_bytes);
+
+      if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
 	{
-	  struct rte_eth_dev_info dev_info;
-
-	  /*
-	   * Restore mtu to what has been set by CIMC in the firmware cfg.
-	   */
-	  rte_eth_dev_info_get (xd->device_index, &dev_info);
-	  hi->max_packet_bytes = dev_info.max_rx_pktlen;
-
-	  vlib_cli_output (vlib_get_main (),
-			   "Cisco VIC mtu can only be changed "
-			   "using CIMC then rebooting the server!");
-	}
-      else
-	{
-	  int rv;
-
-	  xd->port_conf.rxmode.max_rx_pkt_len = hi->max_packet_bytes;
-
-	  if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
-	    rte_eth_dev_stop (xd->device_index);
-
-	  rv = rte_eth_dev_configure
-	    (xd->device_index, xd->rx_q_used, xd->tx_q_used, &xd->port_conf);
-
+	  int rv = rte_eth_dev_start (xd->device_index);
+	  if (!rv && xd->default_mac_address)
+	    rv = rte_eth_dev_default_mac_addr_set (xd->device_index,
+						   (struct ether_addr *)
+						   xd->default_mac_address);
 	  if (rv < 0)
-	    vlib_cli_output (vlib_get_main (),
-			     "rte_eth_dev_configure[%d]: err %d",
-			     xd->device_index, rv);
-
-	  rte_eth_dev_set_mtu (xd->device_index, hi->max_packet_bytes);
-
-	  if (xd->flags & DPDK_DEVICE_FLAG_ADMIN_UP)
-	    {
-	      int rv = rte_eth_dev_start (xd->device_index);
-	      if (!rv && xd->default_mac_address)
-		rv = rte_eth_dev_default_mac_addr_set (xd->device_index,
-						       (struct ether_addr *)
-						       xd->default_mac_address);
-	      if (rv < 0)
-		clib_warning ("rte_eth_dev_start %d returned %d",
-			      xd->device_index, rv);
-	    }
+	    clib_warning ("rte_eth_dev_start %d returned %d",
+			  xd->device_index, rv);
 	}
+
     }
   return old;
 }
@@ -516,6 +495,7 @@ dpdk_lib_init (dpdk_main_t * dm)
 
   u32 next_cpu = 0, next_hqos_cpu = 0;
   u8 af_packet_port_id = 0;
+  u8 bond_ether_port_id = 0;
   last_pci_addr.as_u32 = ~0;
 
   dm->input_cpu_first_index = 0;
@@ -654,11 +634,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 	{
 	  xd->tx_conf.txq_flags |= ETH_TXQ_FLAGS_NOMULTSEGS;
 	  port_conf_template.rxmode.jumbo_frame = 0;
+	  port_conf_template.rxmode.enable_scatter = 0;
 	}
       else
 	{
 	  xd->tx_conf.txq_flags &= ~ETH_TXQ_FLAGS_NOMULTSEGS;
 	  port_conf_template.rxmode.jumbo_frame = 1;
+	  port_conf_template.rxmode.enable_scatter = 1;
 	  xd->flags |= DPDK_DEVICE_FLAG_MAYBE_MULTISEG;
 	}
 
@@ -789,7 +771,10 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	    case VNET_DPDK_PMD_MLX5:
 	      {
-		char *pn_100g[] = { "MCX415A-CCAT", "MCX416A-CCAT", 0 };
+		char *pn_100g[] = { "MCX415A-CCAT", "MCX416A-CCAT",
+		  "MCX556A-ECAT", "MCX556A-EDAT", "MCX555A-ECAT",
+		  "MCX515A-CCAT", "MCX516A-CCAT", "MCX516A-CDAT", 0
+		};
 		char *pn_40g[] = { "MCX413A-BCAT", "MCX414A-BCAT",
 		  "MCX415A-BCAT", "MCX416A-BCAT", "MCX4131A-BCAT", 0
 		};
@@ -862,12 +847,13 @@ dpdk_lib_init (dpdk_main_t * dm)
 
 	    case VNET_DPDK_PMD_AF_PACKET:
 	      xd->port_type = VNET_DPDK_PORT_TYPE_AF_PACKET;
-	      xd->af_packet_port_id = af_packet_port_id++;
+	      xd->port_id = af_packet_port_id++;
 	      break;
 
 	    case VNET_DPDK_PMD_BOND:
 	      xd->flags |= DPDK_DEVICE_FLAG_PMD_SUPPORTS_PTYPE;
 	      xd->port_type = VNET_DPDK_PORT_TYPE_ETH_BOND;
+	      xd->port_id = bond_ether_port_id++;
 	      break;
 
 	    default:
@@ -1063,16 +1049,13 @@ dpdk_lib_init (dpdk_main_t * dm)
       hi = vnet_get_hw_interface (dm->vnet_main, xd->vlib_hw_if_index);
 
       /*
-       * DAW-FIXME: The Cisco VIC firmware does not provide an api for a
-       *            driver to dynamically change the mtu.  If/when the
-       *            VIC firmware gets fixed, then this should be removed.
+       * For cisco VIC vNIC, set default to VLAN strip enabled, unless
+       * specified otherwise in the startup config.
+       * For other NICs default to VLAN strip disabled, unless specified
+       * otherwis in the startup config.
        */
       if (xd->pmd == VNET_DPDK_PMD_ENIC)
 	{
-	  /*
-	   * Initialize mtu to what has been set by CIMC in the firmware cfg.
-	   */
-	  hi->max_packet_bytes = dev_info.max_rx_pktlen;
 	  if (devconf->vlan_strip_offload != DPDK_DEVICE_VLAN_STRIP_OFF)
 	    vlan_strip = 1;	/* remove vlan tag from VIC port by default */
 	  else
@@ -1872,13 +1855,9 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
       {
 	for (i = 0; i < nports; i++)
 	  {
-	    struct rte_eth_dev_info dev_info;
-	    rte_eth_dev_info_get (i, &dev_info);
-	    if (!dev_info.driver_name)
-	      dev_info.driver_name = dev_info.pci_dev->driver->driver.name;
-
-	    ASSERT (dev_info.driver_name);
-	    if (strncmp (dev_info.driver_name, "rte_bond_pmd", 12) == 0)
+	    xd = &dm->devices[i];
+	    ASSERT (i == xd->device_index);
+	    if (xd->pmd == VNET_DPDK_PMD_BOND)
 	      {
 		u8 addr[6];
 		u8 slink[16];
@@ -1890,24 +1869,24 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 		    int rv;
 
 		    /* Get MAC of 1st slave link */
-		    rte_eth_macaddr_get (slink[0],
-					 (struct ether_addr *) addr);
+		    rte_eth_macaddr_get
+		      (slink[0], (struct ether_addr *) addr);
+
 		    /* Set MAC of bounded interface to that of 1st slave link */
-		    rv =
-		      rte_eth_bond_mac_address_set (i,
-						    (struct ether_addr *)
-						    addr);
-		    if (rv < 0)
-		      clib_warning ("Failed to set MAC address");
+		    clib_warning ("Set MAC for bond dev# %d", i);
+		    rv = rte_eth_bond_mac_address_set
+		      (i, (struct ether_addr *) addr);
+		    if (rv)
+		      clib_warning ("Set MAC addr failure rv=%d", rv);
 
 		    /* Populate MAC of bonded interface in VPP hw tables */
-		    bhi =
-		      vnet_get_hw_interface (vnm,
-					     dm->devices[i].vlib_hw_if_index);
-		    bei =
-		      pool_elt_at_index (em->interfaces, bhi->hw_instance);
+		    bhi = vnet_get_hw_interface
+		      (vnm, dm->devices[i].vlib_hw_if_index);
+		    bei = pool_elt_at_index
+		      (em->interfaces, bhi->hw_instance);
 		    clib_memcpy (bhi->hw_address, addr, 6);
 		    clib_memcpy (bei->address, addr, 6);
+
 		    /* Init l3 packet size allowed on bonded interface */
 		    bhi->max_packet_bytes = ETHERNET_MAX_PACKET_BYTES;
 		    bhi->max_l3_packet_bytes[VLIB_RX] =
@@ -1919,22 +1898,31 @@ dpdk_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
 			dpdk_device_t *sdev = &dm->devices[slave];
 			vnet_hw_interface_t *shi;
 			vnet_sw_interface_t *ssi;
+			ethernet_interface_t *sei;
 			/* Add MAC to all slave links except the first one */
 			if (nlink)
-			  rte_eth_dev_mac_addr_add (slave,
-						    (struct ether_addr *)
-						    addr, 0);
+			  {
+			    clib_warning ("Add MAC for slave dev# %d", slave);
+			    rv = rte_eth_dev_mac_addr_add
+			      (slave, (struct ether_addr *) addr, 0);
+			    if (rv)
+			      clib_warning ("Add MAC addr failure rv=%d", rv);
+			  }
 			/* Set slaves bitmap for bonded interface */
-			bhi->bond_info =
-			  clib_bitmap_set (bhi->bond_info,
-					   sdev->vlib_hw_if_index, 1);
+			bhi->bond_info = clib_bitmap_set
+			  (bhi->bond_info, sdev->vlib_hw_if_index, 1);
 			/* Set slave link flags on slave interface */
-			shi =
-			  vnet_get_hw_interface (vnm, sdev->vlib_hw_if_index);
-			ssi =
-			  vnet_get_sw_interface (vnm, sdev->vlib_sw_if_index);
+			shi = vnet_get_hw_interface
+			  (vnm, sdev->vlib_hw_if_index);
+			ssi = vnet_get_sw_interface
+			  (vnm, sdev->vlib_sw_if_index);
+			sei = pool_elt_at_index
+			  (em->interfaces, shi->hw_instance);
+
 			shi->bond_info = VNET_HW_INTERFACE_BOND_INFO_SLAVE;
 			ssi->flags |= VNET_SW_INTERFACE_FLAG_BOND_SLAVE;
+			clib_memcpy (shi->hw_address, addr, 6);
+			clib_memcpy (sei->address, addr, 6);
 
 			/* Set l3 packet size allowed as the lowest of slave */
 			if (bhi->max_l3_packet_bytes[VLIB_RX] >

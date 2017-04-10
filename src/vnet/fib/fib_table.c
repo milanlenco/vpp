@@ -47,7 +47,7 @@ fib_table_lookup_i (fib_table_t *fib_table,
     switch (prefix->fp_proto)
     {
     case FIB_PROTOCOL_IP4:
-	return (ip4_fib_table_lookup(&fib_table->v4,
+	return (ip4_fib_table_lookup(ip4_fib_get(fib_table->ft_index),
 				     &prefix->fp_addr.ip4,
 				     prefix->fp_len));
     case FIB_PROTOCOL_IP6:
@@ -55,7 +55,7 @@ fib_table_lookup_i (fib_table_t *fib_table,
 				     &prefix->fp_addr.ip6,
 				     prefix->fp_len));
     case FIB_PROTOCOL_MPLS:
-	return (mpls_fib_table_lookup(&fib_table->mpls,
+	return (mpls_fib_table_lookup(mpls_fib_get(fib_table->ft_index),
 				      prefix->fp_label,
 				      prefix->fp_eos));
     }
@@ -76,7 +76,7 @@ fib_table_lookup_exact_match_i (const fib_table_t *fib_table,
     switch (prefix->fp_proto)
     {
     case FIB_PROTOCOL_IP4:
-	return (ip4_fib_table_lookup_exact_match(&fib_table->v4,
+	return (ip4_fib_table_lookup_exact_match(ip4_fib_get(fib_table->ft_index),
 						 &prefix->fp_addr.ip4,
 						 prefix->fp_len));
     case FIB_PROTOCOL_IP6:
@@ -84,7 +84,7 @@ fib_table_lookup_exact_match_i (const fib_table_t *fib_table,
 						 &prefix->fp_addr.ip6,
 						 prefix->fp_len));
     case FIB_PROTOCOL_MPLS:
-	return (mpls_fib_table_lookup(&fib_table->mpls,
+	return (mpls_fib_table_lookup(mpls_fib_get(fib_table->ft_index),
 				      prefix->fp_label,
 				      prefix->fp_eos));
     }
@@ -148,7 +148,7 @@ fib_table_entry_remove (fib_table_t *fib_table,
     switch (prefix->fp_proto)
     {
     case FIB_PROTOCOL_IP4:
-	ip4_fib_table_entry_remove(&fib_table->v4,
+	ip4_fib_table_entry_remove(ip4_fib_get(fib_table->ft_index),
 				   &prefix->fp_addr.ip4,
 				   prefix->fp_len);
 	break;
@@ -158,7 +158,7 @@ fib_table_entry_remove (fib_table_t *fib_table,
 				   prefix->fp_len);
 	break;
     case FIB_PROTOCOL_MPLS:
-	mpls_fib_table_entry_remove(&fib_table->mpls,
+	mpls_fib_table_entry_remove(mpls_fib_get(fib_table->ft_index),
 				    prefix->fp_label,
 				    prefix->fp_eos);
 	break;
@@ -208,7 +208,7 @@ fib_table_entry_insert (fib_table_t *fib_table,
     switch (prefix->fp_proto)
     {
     case FIB_PROTOCOL_IP4:
-	ip4_fib_table_entry_insert(&fib_table->v4,
+	ip4_fib_table_entry_insert(ip4_fib_get(fib_table->ft_index),
 				   &prefix->fp_addr.ip4,
 				   prefix->fp_len,
 				   fib_entry_index);
@@ -220,7 +220,7 @@ fib_table_entry_insert (fib_table_t *fib_table,
 				   fib_entry_index);
 	break;
     case FIB_PROTOCOL_MPLS:
-	mpls_fib_table_entry_insert(&fib_table->mpls,
+	mpls_fib_table_entry_insert(mpls_fib_get(fib_table->ft_index),
 				    prefix->fp_label,
 				    prefix->fp_eos,
 				    fib_entry_index);
@@ -270,7 +270,9 @@ fib_table_fwding_dpo_remove (u32 fib_index,
 	return (ip4_fib_table_fwding_dpo_remove(ip4_fib_get(fib_index),
 						&prefix->fp_addr.ip4,
 						prefix->fp_len,
-						dpo));
+						dpo,
+                                                fib_table_get_less_specific(fib_index,
+                                                                            prefix)));
     case FIB_PROTOCOL_IP6:
 	return (ip6_fib_table_fwding_dpo_remove(fib_index,
 						&prefix->fp_addr.ip6,
@@ -473,15 +475,41 @@ fib_table_entry_special_remove (u32 fib_index,
  */
 static void
 fib_table_route_path_fixup (const fib_prefix_t *prefix,
+                            fib_entry_flag_t eflags,
 			    fib_route_path_t *path)
 {
+    /*
+     * not all zeros next hop &&
+     * is recursive path &&
+     * nexthop is same as the route's address
+     */
+    if ((!ip46_address_is_zero(&path->frp_addr)) &&
+        (~0 == path->frp_sw_if_index) &&
+        (0 == ip46_address_cmp(&path->frp_addr, &prefix->fp_addr)))
+    {
+        /* Prefix recurses via itse;f */
+	path->frp_flags |= FIB_ROUTE_PATH_DROP;
+    }
     if (fib_prefix_is_host(prefix) &&
 	ip46_address_is_zero(&path->frp_addr) &&
 	path->frp_sw_if_index != ~0)
     {
 	path->frp_addr = prefix->fp_addr;
+        path->frp_flags |= FIB_ROUTE_PATH_ATTACHED;
     }
-}		  
+    if (eflags & FIB_ENTRY_FLAG_DROP)
+    {
+	path->frp_flags |= FIB_ROUTE_PATH_DROP;
+    }
+    if (eflags & FIB_ENTRY_FLAG_LOCAL)
+    {
+	path->frp_flags |= FIB_ROUTE_PATH_LOCAL;
+    }
+    if (eflags & FIB_ENTRY_FLAG_EXCLUSIVE)
+    {
+	path->frp_flags |= FIB_ROUTE_PATH_EXCLUSIVE;
+    }
+}
 
 fib_node_index_t
 fib_table_entry_path_add (u32 fib_index,
@@ -533,7 +561,7 @@ fib_table_entry_path_add2 (u32 fib_index,
 
     for (ii = 0; ii < vec_len(rpath); ii++)
     {
-	fib_table_route_path_fixup(prefix, &rpath[ii]);
+	fib_table_route_path_fixup(prefix, flags, &rpath[ii]);
     }
 
     if (FIB_NODE_INDEX_INVALID == fib_entry_index)
@@ -580,11 +608,6 @@ fib_table_entry_path_remove2 (u32 fib_index,
     fib_table = fib_table_get(fib_index, prefix->fp_proto);
     fib_entry_index = fib_table_lookup_exact_match_i(fib_table, prefix);
 
-    for (ii = 0; ii < vec_len(rpath); ii++)
-    {
-	fib_table_route_path_fixup(prefix, &rpath[ii]);
-    }
-
     if (FIB_NODE_INDEX_INVALID == fib_entry_index)
     {
 	/*
@@ -601,6 +624,15 @@ fib_table_entry_path_remove2 (u32 fib_index,
 	 */
 	fib_entry_lock(fib_entry_index);
         was_sourced = fib_entry_is_sourced(fib_entry_index, source);
+
+        for (ii = 0; ii < vec_len(rpath); ii++)
+        {
+            fib_table_route_path_fixup(
+                prefix,
+                fib_entry_get_flags_for_source(fib_entry_index,
+                                               source),
+                &rpath[ii]);
+        }
 
 	src_flag = fib_entry_path_remove(fib_entry_index, source, rpath);
 
@@ -658,7 +690,6 @@ fib_table_entry_path_remove (u32 fib_index,
     };
     fib_route_path_t *paths = NULL;
 
-    fib_table_route_path_fixup(prefix, &path);
     vec_add1(paths, path);
 
     fib_table_entry_path_remove2(fib_index, prefix, source, paths);
@@ -689,7 +720,7 @@ fib_table_entry_update (u32 fib_index,
 
     for (ii = 0; ii < vec_len(paths); ii++)
     {
-	fib_table_route_path_fixup(prefix, &paths[ii]);
+	fib_table_route_path_fixup(prefix, flags, &paths[ii]);
     }
     /*
      * sort the paths provided by the control plane. this means
@@ -747,7 +778,6 @@ fib_table_entry_update_one_path (u32 fib_index,
     };
     fib_route_path_t *paths = NULL;
 
-    fib_table_route_path_fixup(prefix, &path);
     vec_add1(paths, path);
 
     fib_entry_index = 
@@ -1033,13 +1063,13 @@ fib_table_destroy (fib_table_t *fib_table)
     switch (fib_table->ft_proto)
     {
     case FIB_PROTOCOL_IP4:
-	ip4_fib_table_destroy(&fib_table->v4);
+	ip4_fib_table_destroy(fib_table->ft_index);
 	break;
     case FIB_PROTOCOL_IP6:
 	ip6_fib_table_destroy(fib_table->ft_index);
 	break;
     case FIB_PROTOCOL_MPLS:
-	mpls_fib_table_destroy(&fib_table->mpls);
+	mpls_fib_table_destroy(fib_table->ft_index);
 	break;
     }
 }

@@ -349,6 +349,7 @@ update_lb (ip6_sr_policy_t * sr_policy)
   ip6_sr_sl_t *segment_list;
   ip6_sr_main_t *sm = &sr_main;
   load_balance_path_t path;
+  path.path_index = FIB_NODE_INDEX_INVALID;
   load_balance_path_t *ip4_path_vector = 0;
   load_balance_path_t *ip6_path_vector = 0;
   load_balance_path_t *b_path_vector = 0;
@@ -447,6 +448,7 @@ update_replicate (ip6_sr_policy_t * sr_policy)
   ip6_sr_sl_t *segment_list;
   ip6_sr_main_t *sm = &sr_main;
   load_balance_path_t path;
+  path.path_index = FIB_NODE_INDEX_INVALID;
   load_balance_path_t *b_path_vector = 0;
   load_balance_path_t *ip6_path_vector = 0;
   load_balance_path_t *ip4_path_vector = 0;
@@ -516,11 +518,6 @@ update_replicate (ip6_sr_policy_t * sr_policy)
   replicate_multipath_update (&sr_policy->ip6_dpo, ip6_path_vector);
   if (sr_policy->is_encap)
     replicate_multipath_update (&sr_policy->ip4_dpo, ip4_path_vector);
-
-  /* Cleanup */
-  vec_free (b_path_vector);
-  vec_free (ip6_path_vector);
-  vec_free (ip4_path_vector);
 }
 
 /******************************* SR rewrite API *******************************/
@@ -548,11 +545,10 @@ sr_policy_add (ip6_address_t * bsid, ip6_address_t * segments,
 {
   ip6_sr_main_t *sm = &sr_main;
   ip6_sr_policy_t *sr_policy = 0;
-  ip6_address_t *key_copy;
   uword *p;
 
   /* Search for existing keys (BSID) */
-  p = hash_get_mem (sm->sr_policy_index_by_key, bsid);
+  p = mhash_get (&sm->sr_policies_index_hash, bsid);
   if (p)
     {
       /* Add SR policy that already exists; complain */
@@ -592,10 +588,8 @@ sr_policy_add (ip6_address_t * bsid, ip6_address_t * segments,
   sr_policy->is_encap = is_encap;
 
   /* Copy the key */
-  key_copy = vec_new (ip6_address_t, 1);
-  clib_memcpy (key_copy, bsid, sizeof (ip6_address_t));
-  hash_set_mem (sm->sr_policy_index_by_key, key_copy,
-		sr_policy - sm->sr_policies);
+  mhash_set (&sm->sr_policies_index_hash, bsid, sr_policy - sm->sr_policies,
+	     NULL);
 
   /* Create a segment list and add the index to the SR policy */
   create_sl (sr_policy, segments, weight, is_encap);
@@ -607,10 +601,6 @@ sr_policy_add (ip6_address_t * bsid, ip6_address_t * segments,
 						     "SRv6 steering of IP6 prefixes through BSIDs");
       sm->fib_table_ip4 = fib_table_create_and_lock (FIB_PROTOCOL_IP6,
 						     "SRv6 steering of IP4 prefixes through BSIDs");
-      fib_table_flush (sm->fib_table_ip6, FIB_PROTOCOL_IP6,
-		       FIB_SOURCE_SPECIAL);
-      fib_table_flush (sm->fib_table_ip4, FIB_PROTOCOL_IP6,
-		       FIB_SOURCE_SPECIAL);
     }
 
   /* Create IPv6 FIB for the BindingSID attached to the DPO of the only SL */
@@ -635,14 +625,12 @@ sr_policy_del (ip6_address_t * bsid, u32 index)
   ip6_sr_main_t *sm = &sr_main;
   ip6_sr_policy_t *sr_policy = 0;
   ip6_sr_sl_t *segment_list;
-  ip6_address_t *key_copy;
   u32 *sl_index;
   uword *p;
 
-  hash_pair_t *hp;
   if (bsid)
     {
-      p = hash_get_mem (sm->sr_policy_index_by_key, bsid);
+      p = mhash_get (&sm->sr_policies_index_hash, bsid);
       if (p)
 	sr_policy = pool_elt_at_index (sm->sr_policies, p[0]);
       else
@@ -692,14 +680,11 @@ sr_policy_del (ip6_address_t * bsid, u32 index)
   }
 
   /* Remove SR policy entry */
-  hp = hash_get_pair (sm->sr_policy_index_by_key, &sr_policy->bsid);
-  key_copy = (void *) (hp->key);
-  hash_unset_mem (sm->sr_policy_index_by_key, &sr_policy->bsid);
-  vec_free (key_copy);
+  mhash_unset (&sm->sr_policies_index_hash, &sr_policy->bsid, NULL);
   pool_put (sm->sr_policies, sr_policy);
 
   /* If FIB empty unlock it */
-  if (!pool_elts (sm->sr_policies))
+  if (!pool_elts (sm->sr_policies) && !pool_elts (sm->steer_policies))
     {
       fib_table_unlock (sm->fib_table_ip6, FIB_PROTOCOL_IP6);
       fib_table_unlock (sm->fib_table_ip4, FIB_PROTOCOL_IP6);
@@ -741,7 +726,7 @@ sr_policy_mod (ip6_address_t * bsid, u32 index, u32 fib_table,
 
   if (bsid)
     {
-      p = hash_get_mem (sm->sr_policy_index_by_key, bsid);
+      p = mhash_get (&sm->sr_policies_index_hash, bsid);
       if (p)
 	sr_policy = pool_elt_at_index (sm->sr_policies, p[0]);
       else
@@ -1147,14 +1132,14 @@ sr_policy_rewrite_encaps (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
 
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl1->rewrite) + b1->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl2->rewrite) + b2->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl3->rewrite) + b3->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
+	  ASSERT (b1->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl1->rewrite));
+	  ASSERT (b2->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl2->rewrite));
+	  ASSERT (b3->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl3->rewrite));
 
 	  ip0_encap = vlib_buffer_get_current (b0);
 	  ip1_encap = vlib_buffer_get_current (b1);
@@ -1254,9 +1239,8 @@ sr_policy_rewrite_encaps (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl0 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
 
 	  ip0_encap = vlib_buffer_get_current (b0);
 
@@ -1426,15 +1410,14 @@ sr_policy_rewrite_encaps_v4 (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl3 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl1->rewrite) + b1->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl2->rewrite) + b2->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl3->rewrite) + b3->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
+	  ASSERT (b1->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl1->rewrite));
+	  ASSERT (b2->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl2->rewrite));
+	  ASSERT (b3->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl3->rewrite));
 
 	  ip0_encap = vlib_buffer_get_current (b0);
 	  ip1_encap = vlib_buffer_get_current (b1);
@@ -1535,9 +1518,8 @@ sr_policy_rewrite_encaps_v4 (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl0 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
 
 	  ip0_encap = vlib_buffer_get_current (b0);
 
@@ -1785,14 +1767,14 @@ sr_policy_rewrite_encaps_l2 (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
 
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl1->rewrite) + b1->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl2->rewrite) + b2->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl3->rewrite) + b3->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
+	  ASSERT (b1->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl1->rewrite));
+	  ASSERT (b2->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl2->rewrite));
+	  ASSERT (b3->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl3->rewrite));
 
 	  en0 = vlib_buffer_get_current (b0);
 	  en1 = vlib_buffer_get_current (b1);
@@ -1926,9 +1908,8 @@ sr_policy_rewrite_encaps_l2 (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl0 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
 
 	  en0 = vlib_buffer_get_current (b0);
 
@@ -2075,15 +2056,14 @@ sr_policy_rewrite_insert (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl3 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl1->rewrite) + b1->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl2->rewrite) + b2->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl3->rewrite) + b3->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
+	  ASSERT (b1->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl1->rewrite));
+	  ASSERT (b2->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl2->rewrite));
+	  ASSERT (b3->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl3->rewrite));
 
 	  ip0 = vlib_buffer_get_current (b0);
 	  ip1 = vlib_buffer_get_current (b1);
@@ -2321,8 +2301,8 @@ sr_policy_rewrite_insert (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl0 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
 
 	  ip0 = vlib_buffer_get_current (b0);
 
@@ -2498,15 +2478,14 @@ sr_policy_rewrite_b_insert (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl3 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite_bsid) + b0->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl1->rewrite_bsid) + b1->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl2->rewrite_bsid) + b2->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl3->rewrite_bsid) + b3->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite_bsid));
+	  ASSERT (b1->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl1->rewrite_bsid));
+	  ASSERT (b2->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl2->rewrite_bsid));
+	  ASSERT (b3->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl3->rewrite_bsid));
 
 	  ip0 = vlib_buffer_get_current (b0);
 	  ip1 = vlib_buffer_get_current (b1);
@@ -2735,8 +2714,8 @@ sr_policy_rewrite_b_insert (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl0 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite_bsid) + b0->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite_bsid));
 
 	  ip0 = vlib_buffer_get_current (b0);
 
@@ -2943,15 +2922,14 @@ sr_policy_rewrite_b_encaps (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl3 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b3)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl1->rewrite) + b1->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl2->rewrite) + b2->current_data));
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl3->rewrite) + b3->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
+	  ASSERT (b1->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl1->rewrite));
+	  ASSERT (b2->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl2->rewrite));
+	  ASSERT (b3->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl3->rewrite));
 
 	  ip0_encap = vlib_buffer_get_current (b0);
 	  ip1_encap = vlib_buffer_get_current (b1);
@@ -3067,9 +3045,8 @@ sr_policy_rewrite_b_encaps (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  sl0 =
 	    pool_elt_at_index (sm->sid_lists,
 			       vnet_buffer (b0)->ip.adj_index[VLIB_TX]);
-
-	  ASSERT (VLIB_BUFFER_PRE_DATA_SIZE >=
-		  (vec_len (sl0->rewrite) + b0->current_data));
+	  ASSERT (b0->current_data + VLIB_BUFFER_PRE_DATA_SIZE >=
+		  vec_len (sl0->rewrite));
 
 	  ip0_encap = vlib_buffer_get_current (b0);
 	  ip6_ext_header_find_t (ip0_encap, prev0, sr0,
@@ -3216,8 +3193,8 @@ sr_policy_rewrite_init (vlib_main_t * vm)
   ip6_sr_main_t *sm = &sr_main;
 
   /* Init memory for sr policy keys (bsid <-> ip6_address_t) */
-  sm->sr_policy_index_by_key = hash_create_mem (0, sizeof (ip6_address_t),
-						sizeof (uword));
+  mhash_init (&sm->sr_policies_index_hash, sizeof (uword),
+	      sizeof (ip6_address_t));
 
   /* Init SR VPO DPOs type */
   sr_pr_encaps_dpo_type =

@@ -20,6 +20,7 @@
 #include <vlibmemory/api.h>
 #include <vppinfra/sparse_vec.h>
 #include <svm/svm_fifo_segment.h>
+#include <vnet/session/session_debug.h>
 
 #define HALF_OPEN_LOOKUP_INVALID_VALUE ((u64)~0)
 #define INVALID_INDEX ((u32)~0)
@@ -33,9 +34,10 @@ typedef enum
   FIFO_EVENT_SERVER_TX,
   FIFO_EVENT_TIMEOUT,
   FIFO_EVENT_SERVER_EXIT,
+  FIFO_EVENT_BUILTIN_RX
 } fifo_event_type_t;
 
-#define foreach_session_input_error                                         \
+#define foreach_session_input_error                                    	\
 _(NO_SESSION, "No session drops")                                       \
 _(NO_LISTENER, "No listener for dst port drops")                        \
 _(ENQUEUED, "Packets pushed into rx fifo")                              \
@@ -91,14 +93,13 @@ typedef enum
   SESSION_STATE_N_STATES,
 } stream_session_state_t;
 
-typedef CLIB_PACKED (struct
-		     {
-		     svm_fifo_t * fifo;
-		     u8 event_type;
-		     /* $$$$ for event logging */
-		     u16 event_id;
-		     u32 enqueue_length;
-		     }) session_fifo_event_t;
+/* *INDENT-OFF* */
+typedef CLIB_PACKED (struct {
+  svm_fifo_t * fifo;
+  u8 event_type;
+  u16 event_id;
+}) session_fifo_event_t;
+/* *INDENT-ON* */
 
 typedef struct _stream_session_t
 {
@@ -211,13 +212,22 @@ struct _session_manager_main
   session_manager_t *session_managers;
 
   /** Per transport rx function that can either dequeue or peek */
-  session_fifo_rx_fn *session_rx_fns[SESSION_N_TYPES];
+  session_fifo_rx_fn *session_tx_fns[SESSION_N_TYPES];
 
   u8 is_enabled;
 
   /* Convenience */
   vlib_main_t *vlib_main;
   vnet_main_t *vnet_main;
+
+#if SESSION_DBG
+  /**
+   * last event poll time by thread
+   * Debug only. Will cause false cache-line sharing as-is
+   */
+  f64 *last_event_poll_by_thread;
+#endif
+
 };
 
 extern session_manager_main_t session_manager_main;
@@ -333,7 +343,7 @@ stream_session_get_index (stream_session_t * s)
 }
 
 always_inline u32
-stream_session_max_enqueue (transport_connection_t * tc)
+stream_session_max_rx_enqueue (transport_connection_t * tc)
 {
   stream_session_t *s = stream_session_get (tc->s_index, tc->thread_index);
   return svm_fifo_max_enqueue (s->server_rx_fifo);
@@ -346,7 +356,6 @@ stream_session_fifo_size (transport_connection_t * tc)
   return s->server_rx_fifo->nitems;
 }
 
-
 int
 stream_session_enqueue_data (transport_connection_t * tc, u8 * data, u16 len,
 			     u8 queue_event);
@@ -358,6 +367,7 @@ u32 stream_session_dequeue_drop (transport_connection_t * tc, u32 max_bytes);
 void
 stream_session_connect_notify (transport_connection_t * tc, u8 sst,
 			       u8 is_fail);
+
 void stream_session_accept_notify (transport_connection_t * tc);
 void stream_session_disconnect_notify (transport_connection_t * tc);
 void stream_session_delete_notify (transport_connection_t * tc);

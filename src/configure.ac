@@ -1,4 +1,4 @@
-AC_INIT([vpp], [17.04], [vpp-dev@fd.io])
+AC_INIT([vpp], [17.07], [vpp-dev@fd.io])
 LT_INIT
 AC_CONFIG_AUX_DIR([.])
 AM_INIT_AUTOMAKE([subdir-objects])
@@ -154,7 +154,6 @@ PLUGIN_ENABLED(lb)
 PLUGIN_ENABLED(memif)
 PLUGIN_ENABLED(sixrd)
 PLUGIN_ENABLED(snat)
-PLUGIN_DISABLED(srv6sample)
 
 ###############################################################################
 # Dependency checks
@@ -200,6 +199,15 @@ AM_COND_IF([ENABLE_JAPI],
   AC_SUBST(JAVAC)
   AC_SUBST(JAVAH)
   AC_SUBST(JAR)
+])
+
+###############################################################################
+# PYTHON
+###############################################################################
+
+AM_COND_IF([ENABLE_PAPI],
+[
+  AM_PATH_PYTHON
 ])
 
 ###############################################################################

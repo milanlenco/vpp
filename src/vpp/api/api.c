@@ -158,14 +158,14 @@ typedef enum
 } resolve_t;
 
 static vlib_node_registration_t vpe_resolver_process_node;
-vpe_api_main_t vpe_api_main;
+extern vpe_api_main_t vpe_api_main;
 
 static int arp_change_delete_callback (u32 pool_index, u8 * notused);
 static int nd_change_delete_callback (u32 pool_index, u8 * notused);
 
 /* Clean up all registrations belonging to the indicated client */
-int
-vl_api_memclnt_delete_callback (u32 client_index)
+static clib_error_t *
+memclnt_delete_callback (u32 client_index)
 {
   vpe_api_main_t *vam = &vpe_api_main;
   vpe_client_registration_t *rp;
@@ -186,6 +186,8 @@ vl_api_memclnt_delete_callback (u32 client_index)
   return 0;
 }
 
+VL_MSG_API_REAPER_FUNCTION (memclnt_delete_callback);
+
 pub_sub_handler (oam_events, OAM_EVENTS);
 
 #define RESOLUTION_EVENT 1
@@ -197,7 +199,7 @@ int ip4_add_del_route_t_handler (vl_api_ip_add_del_route_t * mp);
 
 int ip6_add_del_route_t_handler (vl_api_ip_add_del_route_t * mp);
 
-void
+static void
 handle_ip4_arp_event (u32 pool_index)
 {
   vpe_api_main_t *vam = &vpe_api_main;
@@ -475,7 +477,6 @@ vl_api_create_vlan_subif_t_handler (vl_api_create_vlan_subif_t * mp)
   uword *p;
   vnet_interface_main_t *im = &vnm->interface_main;
   u64 sup_and_sub_key;
-  u64 *kp;
   unix_shared_memory_queue_t *q;
   clib_error_t *error;
 
@@ -505,9 +506,6 @@ vl_api_create_vlan_subif_t_handler (vl_api_create_vlan_subif_t * mp)
       goto out;
     }
 
-  kp = clib_mem_alloc (sizeof (*kp));
-  *kp = sup_and_sub_key;
-
   memset (&template, 0, sizeof (template));
   template.type = VNET_SW_INTERFACE_TYPE_SUB;
   template.sup_sw_if_index = hi->sw_if_index;
@@ -524,6 +522,10 @@ vl_api_create_vlan_subif_t_handler (vl_api_create_vlan_subif_t * mp)
       rv = VNET_API_ERROR_INVALID_REGISTRATION;
       goto out;
     }
+
+  u64 *kp = clib_mem_alloc (sizeof (*kp));
+  *kp = sup_and_sub_key;
+
   hash_set (hi->sub_interface_sw_if_index_by_id, id, sw_if_index);
   hash_set_mem (im->sw_if_index_by_sup_and_sub, kp, sw_if_index);
 
@@ -535,10 +537,10 @@ out:
     return;
 
   rmp = vl_msg_api_alloc (sizeof (*rmp));
-  rmp->_vl_msg_id = ntohs (VL_API_CREATE_VLAN_SUBIF_REPLY);
+  rmp->_vl_msg_id = htons (VL_API_CREATE_VLAN_SUBIF_REPLY);
   rmp->context = mp->context;
-  rmp->retval = ntohl (rv);
-  rmp->sw_if_index = ntohl (sw_if_index);
+  rmp->retval = htonl (rv);
+  rmp->sw_if_index = htonl (sw_if_index);
   vl_msg_api_send_shmem (q, (u8 *) & rmp);
 }
 
@@ -556,7 +558,6 @@ vl_api_create_subif_t_handler (vl_api_create_subif_t * mp)
   uword *p;
   vnet_interface_main_t *im = &vnm->interface_main;
   u64 sup_and_sub_key;
-  u64 *kp;
   clib_error_t *error;
 
   VALIDATE_SW_IF_INDEX (mp);
@@ -585,9 +586,6 @@ vl_api_create_subif_t_handler (vl_api_create_subif_t * mp)
       goto out;
     }
 
-  kp = clib_mem_alloc (sizeof (*kp));
-  *kp = sup_and_sub_key;
-
   memset (&template, 0, sizeof (template));
   template.type = VNET_SW_INTERFACE_TYPE_SUB;
   template.sup_sw_if_index = sw_if_index;
@@ -610,6 +608,9 @@ vl_api_create_subif_t_handler (vl_api_create_subif_t * mp)
       rv = VNET_API_ERROR_SUBIF_CREATE_FAILED;
       goto out;
     }
+
+  u64 *kp = clib_mem_alloc (sizeof (*kp));
+  *kp = sup_and_sub_key;
 
   hash_set (hi->sub_interface_sw_if_index_by_id, sub_id, sw_if_index);
   hash_set_mem (im->sw_if_index_by_sup_and_sub, kp, sw_if_index);
@@ -667,20 +668,11 @@ static void
   int rv = 0;
   vnet_main_t *vnm = vnet_get_main ();
   vl_api_proxy_arp_intfc_enable_disable_reply_t *rmp;
-  vnet_sw_interface_t *si;
-  u32 sw_if_index;
 
   VALIDATE_SW_IF_INDEX (mp);
 
-  sw_if_index = ntohl (mp->sw_if_index);
-
-  if (pool_is_free_index (vnm->interface_main.sw_interfaces, sw_if_index))
-    {
-      rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
-      goto out;
-    }
-
-  si = vnet_get_sw_interface (vnm, sw_if_index);
+  vnet_sw_interface_t *si =
+    vnet_get_sw_interface (vnm, ntohl (mp->sw_if_index));
 
   ASSERT (si);
 
@@ -857,7 +849,7 @@ vl_api_vnet_get_summary_stats_t_handler (vl_api_vnet_get_summary_stats_t * mp)
   {
     which = cm - im->combined_sw_if_counters;
 
-    for (i = 0; i < vec_len (cm->maxi); i++)
+    for (i = 0; i < vlib_combined_counter_n_counters (cm); i++)
       {
 	vlib_get_combined_counter (cm, i, &v);
 	total_pkts[which] += v.packets;
@@ -904,8 +896,9 @@ ip4_reset_fib_t_handler (vl_api_reset_fib_t * mp)
   /* *INDENT-OFF* */
   pool_foreach (fib_table, im4->fibs,
   ({
-    fib = &fib_table->v4;
     vnet_sw_interface_t * si;
+
+    fib = pool_elt_at_index (im4->v4_fibs, fib_table->ft_index);
 
     if (fib->table_id != target_fib_id)
       continue;
@@ -972,7 +965,8 @@ ip6_reset_fib_t_handler (vl_api_reset_fib_t * mp)
   pool_foreach (fib_table, im6->fibs,
   ({
     vnet_sw_interface_t * si;
-    fib = &(fib_table->v6);
+
+    fib = pool_elt_at_index (im6->v6_fibs, fib_table->ft_index);
 
     if (fib->table_id != target_fib_id)
       continue;
@@ -1221,12 +1215,11 @@ static void vl_api_classify_set_interface_ip_table_t_handler
   vlib_main_t *vm = vlib_get_main ();
   vl_api_classify_set_interface_ip_table_reply_t *rmp;
   int rv;
-  u32 table_index, sw_if_index;
-
-  table_index = ntohl (mp->table_index);
-  sw_if_index = ntohl (mp->sw_if_index);
 
   VALIDATE_SW_IF_INDEX (mp);
+
+  u32 table_index = ntohl (mp->table_index);
+  u32 sw_if_index = ntohl (mp->sw_if_index);
 
   if (mp->is_ipv6)
     rv = vnet_set_ip6_classify_intfc (vm, sw_if_index, table_index);
@@ -1578,12 +1571,23 @@ vl_api_want_ip4_arp_events_t_handler (vl_api_want_ip4_arp_events_t * mp)
   vpe_api_main_t *am = &vpe_api_main;
   vnet_main_t *vnm = vnet_get_main ();
   vl_api_want_ip4_arp_events_reply_t *rmp;
-  vl_api_ip4_arp_event_t *event;
   int rv;
 
   if (mp->enable_disable)
     {
+      vl_api_ip4_arp_event_t *event;
       pool_get (am->arp_events, event);
+      rv = vnet_add_del_ip4_arp_change_event
+	(vnm, arp_change_data_callback,
+	 mp->pid, &mp->address /* addr, in net byte order */ ,
+	 vpe_resolver_process_node.index,
+	 IP4_ARP_EVENT, event - am->arp_events, 1 /* is_add */ );
+
+      if (rv)
+	{
+	  pool_put (am->arp_events, event);
+	  goto out;
+	}
       memset (event, 0, sizeof (*event));
 
       event->_vl_msg_id = ntohs (VL_API_IP4_ARP_EVENT);
@@ -1593,12 +1597,6 @@ vl_api_want_ip4_arp_events_t_handler (vl_api_want_ip4_arp_events_t * mp)
       event->pid = mp->pid;
       if (mp->address == 0)
 	event->mac_ip = 1;
-
-      rv = vnet_add_del_ip4_arp_change_event
-	(vnm, arp_change_data_callback,
-	 mp->pid, &mp->address /* addr, in net byte order */ ,
-	 vpe_resolver_process_node.index,
-	 IP4_ARP_EVENT, event - am->arp_events, 1 /* is_add */ );
     }
   else
     {
@@ -1608,6 +1606,7 @@ vl_api_want_ip4_arp_events_t_handler (vl_api_want_ip4_arp_events_t * mp)
 	 vpe_resolver_process_node.index,
 	 IP4_ARP_EVENT, ~0 /* pool index */ , 0 /* is_add */ );
     }
+out:
   REPLY_MACRO (VL_API_WANT_IP4_ARP_EVENTS_REPLY);
 }
 
@@ -1617,12 +1616,24 @@ vl_api_want_ip6_nd_events_t_handler (vl_api_want_ip6_nd_events_t * mp)
   vpe_api_main_t *am = &vpe_api_main;
   vnet_main_t *vnm = vnet_get_main ();
   vl_api_want_ip6_nd_events_reply_t *rmp;
-  vl_api_ip6_nd_event_t *event;
   int rv;
 
   if (mp->enable_disable)
     {
+      vl_api_ip6_nd_event_t *event;
       pool_get (am->nd_events, event);
+
+      rv = vnet_add_del_ip6_nd_change_event
+	(vnm, nd_change_data_callback,
+	 mp->pid, mp->address /* addr, in net byte order */ ,
+	 vpe_resolver_process_node.index,
+	 IP6_ND_EVENT, event - am->nd_events, 1 /* is_add */ );
+
+      if (rv)
+	{
+	  pool_put (am->nd_events, event);
+	  goto out;
+	}
       memset (event, 0, sizeof (*event));
 
       event->_vl_msg_id = ntohs (VL_API_IP6_ND_EVENT);
@@ -1633,11 +1644,6 @@ vl_api_want_ip6_nd_events_t_handler (vl_api_want_ip6_nd_events_t * mp)
       if (ip6_address_is_zero ((ip6_address_t *) mp->address))
 	event->mac_ip = 1;
 
-      rv = vnet_add_del_ip6_nd_change_event
-	(vnm, nd_change_data_callback,
-	 mp->pid, mp->address /* addr, in net byte order */ ,
-	 vpe_resolver_process_node.index,
-	 IP6_ND_EVENT, event - am->nd_events, 1 /* is_add */ );
     }
   else
     {
@@ -1647,6 +1653,7 @@ vl_api_want_ip6_nd_events_t_handler (vl_api_want_ip6_nd_events_t * mp)
 	 vpe_resolver_process_node.index,
 	 IP6_ND_EVENT, ~0 /* pool index */ , 0 /* is_add */ );
     }
+out:
   REPLY_MACRO (VL_API_WANT_IP6_ND_EVENTS_REPLY);
 }
 
@@ -1656,14 +1663,13 @@ static void vl_api_input_acl_set_interface_t_handler
   vlib_main_t *vm = vlib_get_main ();
   vl_api_input_acl_set_interface_reply_t *rmp;
   int rv;
-  u32 sw_if_index, ip4_table_index, ip6_table_index, l2_table_index;
-
-  ip4_table_index = ntohl (mp->ip4_table_index);
-  ip6_table_index = ntohl (mp->ip6_table_index);
-  l2_table_index = ntohl (mp->l2_table_index);
-  sw_if_index = ntohl (mp->sw_if_index);
 
   VALIDATE_SW_IF_INDEX (mp);
+
+  u32 ip4_table_index = ntohl (mp->ip4_table_index);
+  u32 ip6_table_index = ntohl (mp->ip6_table_index);
+  u32 l2_table_index = ntohl (mp->l2_table_index);
+  u32 sw_if_index = ntohl (mp->sw_if_index);
 
   rv = vnet_set_input_acl_intfc (vm, sw_if_index, ip4_table_index,
 				 ip6_table_index, l2_table_index, mp->is_add);
@@ -2011,25 +2017,22 @@ vl_api_feature_enable_disable_t_handler (vl_api_feature_enable_disable_t * mp)
 {
   vl_api_feature_enable_disable_reply_t *rmp;
   int rv = 0;
-  u8 *arc_name, *feature_name;
 
   VALIDATE_SW_IF_INDEX (mp);
 
-  arc_name = format (0, "%s%c", mp->arc_name, 0);
-  feature_name = format (0, "%s%c", mp->feature_name, 0);
+  u8 *arc_name = format (0, "%s%c", mp->arc_name, 0);
+  u8 *feature_name = format (0, "%s%c", mp->feature_name, 0);
 
-  vnet_feature_registration_t *reg;
-  reg =
+  vnet_feature_registration_t *reg =
     vnet_get_feature_reg ((const char *) arc_name,
 			  (const char *) feature_name);
   if (reg == 0)
     rv = VNET_API_ERROR_INVALID_VALUE;
   else
     {
-      u32 sw_if_index;
+      u32 sw_if_index = ntohl (mp->sw_if_index);
       clib_error_t *error = 0;
 
-      sw_if_index = ntohl (mp->sw_if_index);
       if (reg->enable_disable_cb)
 	error = reg->enable_disable_cb (sw_if_index, mp->enable);
       if (!error)
@@ -2281,7 +2284,7 @@ format_arp_event (u8 * s, va_list * args)
 {
   vl_api_ip4_arp_event_t *event = va_arg (*args, vl_api_ip4_arp_event_t *);
 
-  s = format (s, "pid %d: ", event->pid);
+  s = format (s, "pid %d: ", ntohl (event->pid));
   if (event->mac_ip)
     s = format (s, "bd mac/ip4 binding events");
   else
@@ -2294,7 +2297,7 @@ format_nd_event (u8 * s, va_list * args)
 {
   vl_api_ip6_nd_event_t *event = va_arg (*args, vl_api_ip6_nd_event_t *);
 
-  s = format (s, "pid %d: ", event->pid);
+  s = format (s, "pid %d: ", ntohl (event->pid));
   if (event->mac_ip)
     s = format (s, "bd mac/ip6 binding events");
   else

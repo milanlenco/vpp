@@ -79,23 +79,6 @@ format_memif_tx_trace (u8 * s, va_list * args)
 }
 
 static_always_inline void
-memif_interface_lock (memif_if_t * mif)
-{
-  if (PREDICT_FALSE (mif->lockp != 0))
-    {
-      while (__sync_lock_test_and_set (mif->lockp, 1))
-	;
-    }
-}
-
-static_always_inline void
-memif_interface_unlock (memif_if_t * mif)
-{
-  if (PREDICT_FALSE (mif->lockp != 0))
-    *mif->lockp = 0;
-}
-
-static_always_inline void
 memif_prefetch_buffer_and_data (vlib_main_t * vm, u32 bi)
 {
   vlib_buffer_t *b = vlib_get_buffer (vm, bi);
@@ -117,7 +100,7 @@ memif_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   u16 head, tail;
   u16 free_slots;
 
-  memif_interface_lock (mif);
+  clib_spinlock_lock_if_init (&mif->lockp);
 
   /* free consumed buffers */
 
@@ -210,7 +193,7 @@ memif_interface_tx_inline (vlib_main_t * vm, vlib_node_runtime_t * node,
   CLIB_MEMORY_STORE_BARRIER ();
   ring->head = head;
 
-  memif_interface_unlock (mif);
+  clib_spinlock_unlock_if_init (&mif->lockp);
 
   if (n_left)
     {
@@ -272,9 +255,11 @@ static clib_error_t *
 memif_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 {
   memif_main_t *apm = &memif_main;
-  memif_msg_t msg;
+  vlib_main_t *vm = vlib_get_main ();
+  memif_msg_t msg = { 0 };
   vnet_hw_interface_t *hw = vnet_get_hw_interface (vnm, hw_if_index);
   memif_if_t *mif = pool_elt_at_index (apm->interfaces, hw->dev_instance);
+  static clib_error_t *error = 0;
 
   if (flags & VNET_SW_INTERFACE_FLAG_ADMIN_UP)
     mif->flags |= MEMIF_IF_FLAG_ADMIN_UP;
@@ -286,11 +271,17 @@ memif_interface_admin_up_down (vnet_main_t * vnm, u32 hw_if_index, u32 flags)
 	{
 	  msg.version = MEMIF_VERSION;
 	  msg.type = MEMIF_MSG_TYPE_DISCONNECT;
-	  send (mif->connection.fd, &msg, sizeof (msg), 0);
+	  if (send (mif->connection.fd, &msg, sizeof (msg), 0) < 0)
+	    {
+	      clib_unix_warning ("Failed to send disconnect request");
+	      error = clib_error_return_unix (0, "send fd %d",
+					      mif->connection.fd);
+	      memif_disconnect (vm, mif);
+	    }
 	}
     }
 
-  return 0;
+  return error;
 }
 
 static clib_error_t *

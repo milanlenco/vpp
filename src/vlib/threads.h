@@ -153,23 +153,12 @@ typedef struct
 /* Called early, in thread 0's context */
 clib_error_t *vlib_thread_init (vlib_main_t * vm);
 
-vlib_worker_thread_t *vlib_alloc_thread (vlib_main_t * vm);
-
 int vlib_frame_queue_enqueue (vlib_main_t * vm, u32 node_runtime_index,
 			      u32 frame_queue_index, vlib_frame_t * frame,
 			      vlib_frame_queue_msg_type_t type);
 
 int
 vlib_frame_queue_dequeue (vlib_main_t * vm, vlib_frame_queue_main_t * fqm);
-
-u64 dispatch_node (vlib_main_t * vm,
-		   vlib_node_runtime_t * node,
-		   vlib_node_type_t type,
-		   vlib_node_state_t dispatch_state,
-		   vlib_frame_t * frame, u64 last_time_stamp);
-
-u64 dispatch_pending_node (vlib_main_t * vm,
-			   vlib_pending_frame_t * p, u64 last_time_stamp);
 
 void vlib_worker_thread_node_runtime_update (void);
 
@@ -192,12 +181,19 @@ u32 vlib_frame_queue_main_init (u32 node_index, u32 frame_queue_nelts);
 void vlib_worker_thread_barrier_sync (vlib_main_t * vm);
 void vlib_worker_thread_barrier_release (vlib_main_t * vm);
 
+extern __thread uword vlib_thread_index;
+static_always_inline uword
+vlib_get_thread_index (void)
+{
+  return vlib_thread_index;
+}
+
 always_inline void
 vlib_smp_unsafe_warning (void)
 {
   if (CLIB_DEBUG > 0)
     {
-      if (os_get_cpu_number ())
+      if (vlib_get_thread_index ())
 	fformat (stderr, "%s: SMP unsafe warning...\n", __FUNCTION__);
     }
 }
@@ -210,18 +206,6 @@ typedef enum
 
 void vlib_worker_thread_fork_fixup (vlib_fork_fixup_t which);
 
-static inline void
-vlib_worker_thread_barrier_check (void)
-{
-  if (PREDICT_FALSE (*vlib_worker_threads->wait_at_barrier))
-    {
-      clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, 1);
-      while (*vlib_worker_threads->wait_at_barrier)
-	;
-      clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, -1);
-    }
-}
-
 #define foreach_vlib_main(body)                         \
 do {                                                    \
   vlib_main_t ** __vlib_mains = 0, *this_vlib_main;     \
@@ -230,6 +214,8 @@ do {                                                    \
   for (ii = 0; ii < vec_len (vlib_mains); ii++)         \
     {                                                   \
       this_vlib_main = vlib_mains[ii];                  \
+      ASSERT (ii == 0 ||                                \
+	      this_vlib_main->parked_at_barrier == 1);  \
       if (this_vlib_main)                               \
         vec_add1 (__vlib_mains, this_vlib_main);        \
     }                                                   \
@@ -329,6 +315,8 @@ typedef struct
 
 extern vlib_thread_main_t vlib_thread_main;
 
+#include <vlib/global_funcs.h>
+
 #define VLIB_REGISTER_THREAD(x,...)                     \
   __VA_ARGS__ vlib_thread_registration_t x;             \
 static void __vlib_add_thread_registration_##x (void)   \
@@ -348,21 +336,41 @@ vlib_num_workers ()
 }
 
 always_inline u32
-vlib_get_worker_cpu_index (u32 worker_index)
+vlib_get_worker_thread_index (u32 worker_index)
 {
   return worker_index + 1;
 }
 
 always_inline u32
-vlib_get_worker_index (u32 cpu_index)
+vlib_get_worker_index (u32 thread_index)
 {
-  return cpu_index - 1;
+  return thread_index - 1;
 }
 
 always_inline u32
 vlib_get_current_worker_index ()
 {
-  return os_get_cpu_number () - 1;
+  return vlib_get_thread_index () - 1;
+}
+
+static inline void
+vlib_worker_thread_barrier_check (void)
+{
+  if (PREDICT_FALSE (*vlib_worker_threads->wait_at_barrier))
+    {
+      vlib_main_t *vm;
+      clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, 1);
+      if (CLIB_DEBUG > 0)
+	{
+	  vm = vlib_get_main ();
+	  vm->parked_at_barrier = 1;
+	}
+      while (*vlib_worker_threads->wait_at_barrier)
+	;
+      if (CLIB_DEBUG > 0)
+	vm->parked_at_barrier = 0;
+      clib_smp_atomic_add (vlib_worker_threads->workers_at_barrier, -1);
+    }
 }
 
 always_inline vlib_main_t *
@@ -463,6 +471,8 @@ vlib_get_worker_handoff_queue_elt (u32 frame_queue_index,
 
   return elt;
 }
+
+u8 *vlib_thread_stack_init (uword thread_index);
 
 int vlib_thread_cb_register (struct vlib_main_t *vm,
 			     vlib_thread_callbacks_t * cb);

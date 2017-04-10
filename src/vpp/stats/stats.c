@@ -17,6 +17,7 @@
 #include <vlib/threads.h>
 #include <vnet/fib/fib_entry.h>
 #include <vnet/fib/fib_table.h>
+#include <vnet/fib/ip4_fib.h>
 #include <vnet/dpo/load_balance.h>
 
 #define STATS_DEBUG 0
@@ -65,14 +66,14 @@ _(VNET_IP6_NBR_COUNTERS, vnet_ip6_nbr_counters)
 void
 dslock (stats_main_t * sm, int release_hint, int tag)
 {
-  u32 thread_id;
+  u32 thread_index;
   data_structure_lock_t *l = sm->data_structure_lock;
 
   if (PREDICT_FALSE (l == 0))
     return;
 
-  thread_id = os_get_cpu_number ();
-  if (l->lock && l->thread_id == thread_id)
+  thread_index = vlib_get_thread_index ();
+  if (l->lock && l->thread_index == thread_index)
     {
       l->count++;
       return;
@@ -84,7 +85,7 @@ dslock (stats_main_t * sm, int release_hint, int tag)
   while (__sync_lock_test_and_set (&l->lock, 1))
     /* zzzz */ ;
   l->tag = tag;
-  l->thread_id = thread_id;
+  l->thread_index = thread_index;
   l->count = 1;
 }
 
@@ -98,14 +99,14 @@ stats_dslock_with_hint (int hint, int tag)
 void
 dsunlock (stats_main_t * sm)
 {
-  u32 thread_id;
+  u32 thread_index;
   data_structure_lock_t *l = sm->data_structure_lock;
 
   if (PREDICT_FALSE (l == 0))
     return;
 
-  thread_id = os_get_cpu_number ();
-  ASSERT (l->lock && l->thread_id == thread_id);
+  thread_index = vlib_get_thread_index ();
+  ASSERT (l->lock && l->thread_index == thread_index);
   l->count--;
   if (l->count == 0)
     {
@@ -134,7 +135,7 @@ do_simple_interface_counters (stats_main_t * sm)
   vlib_simple_counter_main_t *cm;
   u32 items_this_message = 0;
   u64 v, *vp = 0;
-  int i;
+  int i, n_counts;
 
   /*
    * Prevent interface registration from expanding / moving the vectors...
@@ -144,13 +145,13 @@ do_simple_interface_counters (stats_main_t * sm)
 
   vec_foreach (cm, im->sw_if_counters)
   {
-
-    for (i = 0; i < vec_len (cm->maxi); i++)
+    n_counts = vlib_simple_counter_n_counters (cm);
+    for (i = 0; i < n_counts; i++)
       {
 	if (mp == 0)
 	  {
 	    items_this_message = clib_min (SIMPLE_COUNTER_BATCH_SIZE,
-					   vec_len (cm->maxi) - i);
+					   n_counts - i);
 
 	    mp = vl_msg_api_alloc_as_if_client
 	      (sizeof (*mp) + items_this_message * sizeof (v));
@@ -189,19 +190,19 @@ do_combined_interface_counters (stats_main_t * sm)
   vlib_combined_counter_main_t *cm;
   u32 items_this_message = 0;
   vlib_counter_t v, *vp = 0;
-  int i;
+  int i, n_counts;
 
   vnet_interface_counter_lock (im);
 
   vec_foreach (cm, im->combined_sw_if_counters)
   {
-
-    for (i = 0; i < vec_len (cm->maxi); i++)
+    n_counts = vlib_combined_counter_n_counters (cm);
+    for (i = 0; i < n_counts; i++)
       {
 	if (mp == 0)
 	  {
 	    items_this_message = clib_min (COMBINED_COUNTER_BATCH_SIZE,
-					   vec_len (cm->maxi) - i);
+					   n_counts - i);
 
 	    mp = vl_msg_api_alloc_as_if_client
 	      (sizeof (*mp) + items_this_message * sizeof (v));
@@ -576,6 +577,7 @@ do_ip4_fibs (stats_main_t * sm)
   static ip4_route_t *routes;
   ip4_route_t *r;
   fib_table_t *fib;
+  ip4_fib_t *v4_fib;
   ip_lookup_main_t *lm = &im4->lookup_main;
   static uword *results;
   vl_api_vnet_ip4_fib_counters_t *mp = 0;
@@ -591,6 +593,8 @@ again:
     /* We may have bailed out due to control-plane activity */
     while ((fib - im4->fibs) < start_at_fib_index)
       continue;
+
+    v4_fib = pool_elt_at_index (im4->v4_fibs, fib->ft_index);
 
     if (mp == 0)
       {
@@ -615,9 +619,9 @@ again:
     vec_reset_length (routes);
     vec_reset_length (results);
 
-    for (i = 0; i < ARRAY_LEN (fib->v4.fib_entry_by_dst_address); i++)
+    for (i = 0; i < ARRAY_LEN (v4_fib->fib_entry_by_dst_address); i++)
       {
-	uword *hash = fib->v4.fib_entry_by_dst_address[i];
+	uword *hash = v4_fib->fib_entry_by_dst_address[i];
 	hash_pair_t *p;
 	ip4_route_t x;
 

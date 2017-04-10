@@ -67,8 +67,6 @@ format_cache_ts_trace (u8 * s, va_list * args)
   return s;
 }
 
-vlib_node_registration_t ioam_cache_ts_node;
-
 #define foreach_cache_ts_error \
 _(RECORDED, "ip6 iOAM headers cached")
 
@@ -398,7 +396,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 					      clib_net_to_host_u32
 					      (tcp0->seq_number) + 1,
 					      no_of_responses, now,
-					      vm->cpu_index, &pool_index0))
+					      vm->thread_index, &pool_index0))
 		    {
 		      cache_ts_added++;
 		    }
@@ -421,7 +419,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 	      e2e =
 		(ioam_e2e_cache_option_t *) ((u8 *) hbh0 +
 					     cm->rewrite_pool_index_offset);
-	      e2e->pool_id = (u8) vm->cpu_index;
+	      e2e->pool_id = (u8) vm->thread_index;
 	      e2e->pool_index = pool_index0;
 	      ioam_e2e_id_rewrite_handler ((ioam_e2e_id_option_t *)
 					   ((u8 *) e2e +
@@ -457,7 +455,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 					      clib_net_to_host_u32
 					      (tcp1->seq_number) + 1,
 					      no_of_responses, now,
-					      vm->cpu_index, &pool_index1))
+					      vm->thread_index, &pool_index1))
 		    {
 		      cache_ts_added++;
 		    }
@@ -481,7 +479,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 	      e2e =
 		(ioam_e2e_cache_option_t *) ((u8 *) hbh1 +
 					     cm->rewrite_pool_index_offset);
-	      e2e->pool_id = (u8) vm->cpu_index;
+	      e2e->pool_id = (u8) vm->thread_index;
 	      e2e->pool_index = pool_index1;
 	      ioam_e2e_id_rewrite_handler ((ioam_e2e_id_option_t *)
 					   ((u8 *) e2e +
@@ -564,7 +562,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 					      clib_net_to_host_u32
 					      (tcp0->seq_number) + 1,
 					      no_of_responses, now,
-					      vm->cpu_index, &pool_index0))
+					      vm->thread_index, &pool_index0))
 		    {
 		      cache_ts_added++;
 		    }
@@ -587,7 +585,7 @@ ip6_reset_ts_hbh_node_fn (vlib_main_t * vm,
 	      e2e =
 		(ioam_e2e_cache_option_t *) ((u8 *) hbh0 +
 					     cm->rewrite_pool_index_offset);
-	      e2e->pool_id = (u8) vm->cpu_index;
+	      e2e->pool_id = (u8) vm->thread_index;
 	      e2e->pool_index = pool_index0;
 	      ioam_e2e_id_rewrite_handler ((ioam_e2e_id_option_t *)
 					   ((u8 *) e2e +
@@ -703,7 +701,7 @@ expired_cache_ts_timer_callback (u32 * expired_timers)
   ioam_cache_main_t *cm = &ioam_cache_main;
   int i;
   u32 pool_index;
-  u32 thread_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
   u32 count = 0;
 
   for (i = 0; i < vec_len (expired_timers); i++)
@@ -726,7 +724,7 @@ ioam_cache_ts_timer_tick_node_fn (vlib_main_t * vm,
 				  vlib_frame_t * f)
 {
   ioam_cache_main_t *cm = &ioam_cache_main;
-  u32 my_thread_index = os_get_cpu_number ();
+  u32 my_thread_index = vlib_get_thread_index ();
   struct timespec ts, tsrem;
 
   tw_timer_expire_timers_16t_2w_512sl (&cm->timer_wheels[my_thread_index],

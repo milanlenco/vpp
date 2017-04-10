@@ -52,7 +52,7 @@ adj_l2_rewrite_inline (vlib_main_t * vm,
 {
     u32 * from = vlib_frame_vector_args (frame);
     u32 n_left_from, n_left_to_next, * to_next, next_index;
-    u32 cpu_index = os_get_cpu_number();
+    u32 thread_index = vlib_get_thread_index();
     ethernet_main_t * em = &ethernet_main;
 
     n_left_from = frame->n_vectors;
@@ -81,9 +81,6 @@ adj_l2_rewrite_inline (vlib_main_t * vm,
 
 	    adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
 
-	    /* We should never rewrite a pkt using the MISS adjacency */
-	    ASSERT(adj_index0);
-
 	    adj0 = adj_get (adj_index0);
 
 	    /* Guess we are only writing on simple Ethernet header. */
@@ -93,9 +90,10 @@ adj_l2_rewrite_inline (vlib_main_t * vm,
 	    /* Update packet buffer attributes/set output interface. */
 	    rw_len0 = adj0[0].rewrite_header.data_bytes;
 	    vnet_buffer(p0)->ip.save_rewrite_length = rw_len0;
+            vnet_buffer(p0)->sw_if_index[VLIB_TX] = adj0->rewrite_header.sw_if_index;
 
 	    vlib_increment_combined_counter(&adjacency_counters,
-                                            cpu_index,
+                                            thread_index,
                                             adj_index0,
                                             /* packet increment */ 0,
                                             /* byte increment */ rw_len0);

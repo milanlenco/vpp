@@ -99,7 +99,7 @@ vlib_node_runtime_update (vlib_main_t * vm, u32 node_index, u32 next_index)
   vlib_pending_frame_t *pf;
   i32 i, j, n_insert;
 
-  ASSERT (os_get_cpu_number () == 0);
+  ASSERT (vlib_get_thread_index () == 0);
 
   vlib_worker_thread_barrier_sync (vm);
 
@@ -434,9 +434,7 @@ register_node (vlib_main_t * vm, vlib_node_registration_t * r)
       rt->errors[i] = vlib_error_set (n->index, i);
 
     STATIC_ASSERT_SIZEOF (vlib_node_runtime_t, 128);
-    ASSERT (vec_len (n->runtime_data) <=
-	    sizeof (vlib_node_runtime_t) -
-	    STRUCT_OFFSET_OF (vlib_node_runtime_t, runtime_data));
+    ASSERT (vec_len (n->runtime_data) <= VLIB_NODE_RUNTIME_DATA_SIZE);
 
     if (vec_len (n->runtime_data) > 0)
       clib_memcpy (rt->runtime_data, n->runtime_data,

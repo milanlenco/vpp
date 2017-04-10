@@ -343,6 +343,11 @@ class VppInterface(object):
         self.test.vapi.sw_interface_enable_disable_mpls(
             self.sw_if_index)
 
+    def disable_mpls(self):
+        """Enable MPLS on the VPP interface."""
+        self.test.vapi.sw_interface_enable_disable_mpls(
+            self.sw_if_index, 0)
+
     def is_ip4_entry_in_fib_dump(self, dump):
         for i in dump:
             if i.address == self.local_ip4n and \
@@ -358,7 +363,7 @@ class VppInterface(object):
             ip_sw_if_index)
 
     def unset_unnumbered(self, ip_sw_if_index):
-        """ Unaet the interface to unnumbered via ip_sw_if_index """
+        """ Unset the interface to unnumbered via ip_sw_if_index """
         self.test.vapi.sw_interface_set_unnumbered(
             self.sw_if_index,
             ip_sw_if_index,

@@ -153,6 +153,9 @@ typedef struct ip6_main_t
   /* Pool of FIBs. */
   struct fib_table_t_ *fibs;
 
+  /* Pool of V6 FIBs. */
+  ip6_fib_t *v6_fibs;
+
   /** Vector of MFIBs. */
   struct mfib_table_t_ *mfibs;
 
@@ -373,8 +376,7 @@ int vnet_ip6_nd_term (vlib_main_t * vm,
 		      vlib_node_runtime_t * node,
 		      vlib_buffer_t * p0,
 		      ethernet_header_t * eth,
-		      ip6_header_t * ip,
-		      u32 sw_if_index, u16 bd_index, u8 shg);
+		      ip6_header_t * ip, u32 sw_if_index, u16 bd_index);
 
 u8 *format_ip6_forward_next_trace (u8 * s, va_list * args);
 

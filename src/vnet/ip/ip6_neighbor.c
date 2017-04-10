@@ -530,33 +530,34 @@ ip6_ethernet_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
 	}
       break;
     case IP_LOOKUP_NEXT_MCAST:
-      /*
-       * Construct a partial rewrite from the known ethernet mcast dest MAC
-       */
-      adj_mcast_update_rewrite
-	(ai,
-	 ethernet_build_rewrite (vnm,
-				 sw_if_index,
-				 adj->ia_link,
-				 ethernet_ip6_mcast_dst_addr ()));
+      {
+	/*
+	 * Construct a partial rewrite from the known ethernet mcast dest MAC
+	 */
+	u8 *rewrite;
+	u8 offset;
 
-      /*
-       * Complete the remaining fields of the adj's rewrite to direct the
-       * complete of the rewrite at switch time by copying in the IP
-       * dst address's bytes.
-       * Ofset is 12 bytes from the end of the MAC header - which is 2
-       * bytes into the desintation address. And we write 4 bytes.
-       */
-      adj->rewrite_header.dst_mcast_offset = 12;
-      adj->rewrite_header.dst_mcast_n_bytes = 4;
+	rewrite = ethernet_build_rewrite (vnm,
+					  sw_if_index,
+					  adj->ia_link,
+					  ethernet_ip6_mcast_dst_addr ());
 
-      break;
+	/*
+	 * Complete the remaining fields of the adj's rewrite to direct the
+	 * complete of the rewrite at switch time by copying in the IP
+	 * dst address's bytes.
+	 * Ofset is 2 bytes into the desintation address. And we write 4 bytes.
+	 */
+	offset = vec_len (rewrite) - 2;
+	adj_mcast_update_rewrite (ai, rewrite, offset, 0xffffffff);
 
+	break;
+      }
     case IP_LOOKUP_NEXT_DROP:
     case IP_LOOKUP_NEXT_PUNT:
     case IP_LOOKUP_NEXT_LOCAL:
     case IP_LOOKUP_NEXT_REWRITE:
-    case IP_LOOKUP_NEXT_LOAD_BALANCE:
+    case IP_LOOKUP_NEXT_MCAST_MIDCHAIN:
     case IP_LOOKUP_NEXT_MIDCHAIN:
     case IP_LOOKUP_NEXT_ICMP_ERROR:
     case IP_LOOKUP_N_NEXT:
@@ -581,7 +582,7 @@ vnet_set_ip6_ethernet_neighbor (vlib_main_t * vm,
   u32 next_index;
   pending_resolution_t *pr, *mc;
 
-  if (os_get_cpu_number ())
+  if (vlib_get_thread_index ())
     {
       set_unset_ip6_neighbor_rpc (vm, sw_if_index, a, link_layer_address,
 				  1 /* set new neighbor */ , is_static,
@@ -722,7 +723,7 @@ vnet_unset_ip6_ethernet_neighbor (vlib_main_t * vm,
   uword *p;
   int rv = 0;
 
-  if (os_get_cpu_number ())
+  if (vlib_get_thread_index ())
     {
       set_unset_ip6_neighbor_rpc (vm, sw_if_index, a, link_layer_address,
 				  0 /* unset */ , 0, 0);
@@ -3909,76 +3910,59 @@ vnet_add_del_ip6_nd_change_event (vnet_main_t * vnm,
 {
   ip6_neighbor_main_t *nm = &ip6_neighbor_main;
   ip6_address_t *address = address_arg;
-  uword *p;
-  pending_resolution_t *mc;
-  void (*fp) (u32, u8 *) = data_callback;
 
+  /* Try to find an existing entry */
+  u32 *first = (u32 *) mhash_get (&nm->mac_changes_by_address, address);
+  u32 *p = first;
+  pending_resolution_t *mc;
+  while (p && *p != ~0)
+    {
+      mc = pool_elt_at_index (nm->mac_changes, *p);
+      if (mc->node_index == node_index && mc->type_opaque == type_opaque
+	  && mc->pid == pid)
+	break;
+      p = &mc->next_index;
+    }
+
+  int found = p && *p != ~0;
   if (is_add)
     {
+      if (found)
+	return VNET_API_ERROR_ENTRY_ALREADY_EXISTS;
+
       pool_get (nm->mac_changes, mc);
+      *mc = (pending_resolution_t)
+      {
+      .next_index = ~0,.node_index = node_index,.type_opaque =
+	  type_opaque,.data = data,.data_callback = data_callback,.pid =
+	  pid,};
 
-      mc->next_index = ~0;
-      mc->node_index = node_index;
-      mc->type_opaque = type_opaque;
-      mc->data = data;
-      mc->data_callback = data_callback;
-      mc->pid = pid;
-
-      p = mhash_get (&nm->mac_changes_by_address, address);
+      /* Insert new resolution at the end of the list */
+      u32 new_idx = mc - nm->mac_changes;
       if (p)
-	{
-	  /* Insert new resolution at the head of the list */
-	  mc->next_index = p[0];
-	  mhash_unset (&nm->mac_changes_by_address, address, 0);
-	}
-
-      mhash_set (&nm->mac_changes_by_address, address,
-		 mc - nm->mac_changes, 0);
-      return 0;
+	p[0] = new_idx;
+      else
+	mhash_set (&nm->mac_changes_by_address, address, new_idx, 0);
     }
   else
     {
-      u32 index;
-      pending_resolution_t *mc_last = 0;
-
-      p = mhash_get (&nm->mac_changes_by_address, address);
-      if (p == 0)
+      if (!found)
 	return VNET_API_ERROR_NO_SUCH_ENTRY;
 
-      index = p[0];
+      /* Clients may need to clean up pool entries, too */
+      void (*fp) (u32, u8 *) = data_callback;
+      if (fp)
+	(*fp) (mc->data, 0 /* no new mac addrs */ );
 
-      while (index != (u32) ~ 0)
-	{
-	  mc = pool_elt_at_index (nm->mac_changes, index);
-	  if (mc->node_index == node_index &&
-	      mc->type_opaque == type_opaque && mc->pid == pid)
-	    {
-	      /* Clients may need to clean up pool entries, too */
-	      if (fp)
-		(*fp) (mc->data, 0 /* no new mac addrs */ );
-	      if (index == p[0])
-		{
-		  mhash_unset (&nm->mac_changes_by_address, address, 0);
-		  if (mc->next_index != ~0)
-		    mhash_set (&nm->mac_changes_by_address, address,
-			       mc->next_index, 0);
-		  pool_put (nm->mac_changes, mc);
-		  return 0;
-		}
-	      else
-		{
-		  ASSERT (mc_last);
-		  mc_last->next_index = mc->next_index;
-		  pool_put (nm->mac_changes, mc);
-		  return 0;
-		}
-	    }
-	  mc_last = mc;
-	  index = mc->next_index;
-	}
+      /* Remove the entry from the list and delete the entry */
+      *p = mc->next_index;
+      pool_put (nm->mac_changes, mc);
 
-      return VNET_API_ERROR_NO_SUCH_ENTRY;
+      /* Remove from hash if we deleted the last entry */
+      if (*p == ~0 && p == first)
+	mhash_unset (&nm->mac_changes_by_address, address, 0);
     }
+  return 0;
 }
 
 int
@@ -3986,12 +3970,11 @@ vnet_ip6_nd_term (vlib_main_t * vm,
 		  vlib_node_runtime_t * node,
 		  vlib_buffer_t * p0,
 		  ethernet_header_t * eth,
-		  ip6_header_t * ip, u32 sw_if_index, u16 bd_index, u8 shg)
+		  ip6_header_t * ip, u32 sw_if_index, u16 bd_index)
 {
   ip6_neighbor_main_t *nm = &ip6_neighbor_main;
   icmp6_neighbor_solicitation_or_advertisement_header_t *ndh;
   pending_resolution_t *mc;
-  uword *p;
 
   ndh = ip6_next_header (ip);
   if (ndh->icmp.type != ICMP6_neighbor_solicitation &&
@@ -4007,9 +3990,8 @@ vnet_ip6_nd_term (vlib_main_t * vm,
     }
 
   /* Check if anyone want ND events for L2 BDs */
-  p = mhash_get (&nm->mac_changes_by_address, &ip6a_zero);
-  if (p && shg == 0 &&		/* Only SHG 0 interface which is more likely local */
-      !ip6_address_is_link_local_unicast (&ip->src_address))
+  uword *p = mhash_get (&nm->mac_changes_by_address, &ip6a_zero);
+  if (p && !ip6_address_is_link_local_unicast (&ip->src_address))
     {
       u32 next_index = p[0];
       while (next_index != (u32) ~ 0)

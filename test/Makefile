@@ -23,14 +23,19 @@ verify-no-running-vpp:
 		false; \
 	fi
 
-UNITTEST_EXTRA_OPTS=""
+UNITTEST_EXTRA_OPTS=
+UNITTEST_FAILFAST_OPTS=
 
 ifeq ($(FAILFAST),1)
-UNITTEST_EXTRA_OPTS="-f"
+UNITTEST_EXTRA_OPTS=-f
+endif
+
+ifneq ($(EXTERN_TESTS),)
+UNITTEST_EXTRA_OPTS=$(UNITTEST_FAILFAST_OPTS) -d $(EXTERN_TESTS)
 endif
 
 PYTHON_VENV_PATH=$(VPP_PYTHON_PREFIX)/virtualenv
-PYTHON_DEPENDS=scapy==2.3.3 pexpect subprocess32 git+https://github.com/klement/py-lispnetworking@setup
+PYTHON_DEPENDS=scapy==2.3.3 pexpect subprocess32 cffi git+https://github.com/klement/py-lispnetworking@setup
 SCAPY_SOURCE=$(PYTHON_VENV_PATH)/lib/python2.7/site-packages/
 BUILD_COV_DIR = $(BR)/test-cov
 
@@ -59,7 +64,7 @@ $(PAPI_INSTALL_DONE): $(PIP_PATCH_DONE)
 	@touch $@
 
 define retest-func
-	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && python run_tests.py discover $(UNITTEST_EXTRA_OPTS) -p test_\"*.py\""
+	@bash -c "source $(PYTHON_VENV_PATH)/bin/activate && python run_tests.py -d $(TEST_DIR) $(UNITTEST_EXTRA_OPTS)"
 endef
 
 .PHONY: sanity
@@ -87,6 +92,8 @@ shell: verify-python-path $(PAPI_INSTALL_DONE)
 		echo VPP_TEST_BIN=$(VPP_TEST_BIN);\
 		echo VPP_TEST_PLUGIN_PATH=$(VPP_TEST_PLUGIN_PATH);\
 		echo VPP_TEST_INSTALL_PATH=$(VPP_TEST_INSTALL_PATH);\
+		echo EXTERN_TESTS=$(EXTERN_TESTS);\
+		echo EXTERN_PLUGINS=$(EXTERN_PLUGINS);\
 		echo LD_LIBRARY_PATH=$(LD_LIBRARY_PATH);\
 		echo '***';\
 		exec </dev/tty" | bash -i
@@ -177,6 +184,8 @@ help:
 	@echo " COREDUMP_SIZE=<size> - pass <size> as unix { coredump-size <size> } argument to vpp"
 	@echo "                        e.g. COREDUMP_SIZE=4g"
 	@echo "                             COREDUMP_SIZE=unlimited"
+	@echo " EXTERN_TESTS=<path>  - path to out-of-tree test_<name>.py files containing test cases"
+	@echo " EXTERN_PLUGINS=<path>- path to out-of-tree plugins to be loaded by vpp under test"
 	@echo ""
 	@echo "Creating test documentation"
 	@echo " test-doc            - generate documentation for test framework"

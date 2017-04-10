@@ -74,7 +74,7 @@ ip6_lookup_inline (vlib_main_t * vm,
   vlib_combined_counter_main_t *cm = &load_balance_main.lbm_to_counters;
   u32 n_left_from, n_left_to_next, *from, *to_next;
   ip_lookup_next_t next;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -185,9 +185,9 @@ ip6_lookup_inline (vlib_main_t * vm,
 	  vnet_buffer (p1)->ip.adj_index[VLIB_TX] = dpo1->dpoi_index;
 
 	  vlib_increment_combined_counter
-	    (cm, cpu_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
+	    (cm, thread_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
 	  vlib_increment_combined_counter
-	    (cm, cpu_index, lbi1, 1, vlib_buffer_length_in_chain (vm, p1));
+	    (cm, thread_index, lbi1, 1, vlib_buffer_length_in_chain (vm, p1));
 
 	  from += 2;
 	  to_next += 2;
@@ -291,7 +291,7 @@ ip6_lookup_inline (vlib_main_t * vm,
 	  vnet_buffer (p0)->ip.adj_index[VLIB_TX] = dpo0->dpoi_index;
 
 	  vlib_increment_combined_counter
-	    (cm, cpu_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
+	    (cm, thread_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
 
 	  from += 1;
 	  to_next += 1;
@@ -703,7 +703,7 @@ ip6_load_balance (vlib_main_t * vm,
   vlib_combined_counter_main_t *cm = &load_balance_main.lbm_via_counters;
   u32 n_left_from, n_left_to_next, *from, *to_next;
   ip_lookup_next_t next;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
   ip6_main_t *im = &ip6_main;
 
   from = vlib_frame_vector_args (frame);
@@ -824,9 +824,9 @@ ip6_load_balance (vlib_main_t * vm,
 	  vnet_buffer (p1)->ip.adj_index[VLIB_TX] = dpo1->dpoi_index;
 
 	  vlib_increment_combined_counter
-	    (cm, cpu_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
+	    (cm, thread_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
 	  vlib_increment_combined_counter
-	    (cm, cpu_index, lbi1, 1, vlib_buffer_length_in_chain (vm, p1));
+	    (cm, thread_index, lbi1, 1, vlib_buffer_length_in_chain (vm, p1));
 
 	  vlib_validate_buffer_enqueue_x2 (vm, node, next,
 					   to_next, n_left_to_next,
@@ -886,7 +886,7 @@ ip6_load_balance (vlib_main_t * vm,
 	    }
 
 	  vlib_increment_combined_counter
-	    (cm, cpu_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
+	    (cm, thread_index, lbi0, 1, vlib_buffer_length_in_chain (vm, p0));
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next,
 					   to_next, n_left_to_next,
@@ -961,7 +961,6 @@ format_ip6_rewrite_trace (u8 * s, va_list * args)
   CLIB_UNUSED (vlib_main_t * vm) = va_arg (*args, vlib_main_t *);
   CLIB_UNUSED (vlib_node_t * node) = va_arg (*args, vlib_node_t *);
   ip6_forward_next_trace_t *t = va_arg (*args, ip6_forward_next_trace_t *);
-  vnet_main_t *vnm = vnet_get_main ();
   uword indent = format_get_indent (s);
 
   s = format (s, "tx_sw_if_index %d adj-idx %d : %U flow hash: 0x%08x",
@@ -970,7 +969,7 @@ format_ip6_rewrite_trace (u8 * s, va_list * args)
   s = format (s, "\n%U%U",
 	      format_white_space, indent,
 	      format_ip_adjacency_packet_data,
-	      vnm, t->adj_index, t->packet_data, sizeof (t->packet_data));
+	      t->adj_index, t->packet_data, sizeof (t->packet_data));
   return s;
 }
 
@@ -1898,7 +1897,7 @@ ip6_rewrite_inline (vlib_main_t * vm,
 
   n_left_from = frame->n_vectors;
   next_index = node->cached_next_index;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
 
   while (n_left_from > 0)
     {
@@ -1943,9 +1942,6 @@ ip6_rewrite_inline (vlib_main_t * vm,
 
 	  adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
 	  adj_index1 = vnet_buffer (p1)->ip.adj_index[VLIB_TX];
-
-	  /* We should never rewrite a pkt using the MISS adjacency */
-	  ASSERT (adj_index0 && adj_index1);
 
 	  ip0 = vlib_buffer_get_current (p0);
 	  ip1 = vlib_buffer_get_current (p1);
@@ -2023,11 +2019,11 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	    {
 	      vlib_increment_combined_counter
 		(&adjacency_counters,
-		 cpu_index, adj_index0, 1,
+		 thread_index, adj_index0, 1,
 		 vlib_buffer_length_in_chain (vm, p0) + rw_len0);
 	      vlib_increment_combined_counter
 		(&adjacency_counters,
-		 cpu_index, adj_index1, 1,
+		 thread_index, adj_index1, 1,
 		 vlib_buffer_length_in_chain (vm, p1) + rw_len1);
 	    }
 
@@ -2054,8 +2050,10 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	      vnet_buffer (p0)->sw_if_index[VLIB_TX] = tx_sw_if_index0;
 	      next0 = adj0[0].rewrite_header.next_index;
 
-	      vnet_feature_arc_start (lm->output_feature_arc_index,
-				      tx_sw_if_index0, &next0, p0);
+	      if (PREDICT_FALSE
+		  (adj0[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
+		vnet_feature_arc_start (lm->output_feature_arc_index,
+					tx_sw_if_index0, &next0, p0);
 	    }
 	  if (PREDICT_TRUE (error1 == IP6_ERROR_NONE))
 	    {
@@ -2066,8 +2064,10 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	      vnet_buffer (p1)->sw_if_index[VLIB_TX] = tx_sw_if_index1;
 	      next1 = adj1[0].rewrite_header.next_index;
 
-	      vnet_feature_arc_start (lm->output_feature_arc_index,
-				      tx_sw_if_index1, &next1, p1);
+	      if (PREDICT_FALSE
+		  (adj1[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
+		vnet_feature_arc_start (lm->output_feature_arc_index,
+					tx_sw_if_index1, &next1, p1);
 	    }
 
 	  /* Guess we are only writing on simple Ethernet header. */
@@ -2084,8 +2084,8 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	      /*
 	       * copy bytes from the IP address into the MAC rewrite
 	       */
-	      vnet_fixup_one_header (adj0[0], &ip0->dst_address, ip0, 0);
-	      vnet_fixup_one_header (adj1[0], &ip1->dst_address, ip1, 0);
+	      vnet_fixup_one_header (adj0[0], &ip0->dst_address, ip0);
+	      vnet_fixup_one_header (adj1[0], &ip1->dst_address, ip1);
 	    }
 
 	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
@@ -2107,9 +2107,6 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	  p0 = vlib_get_buffer (vm, pi0);
 
 	  adj_index0 = vnet_buffer (p0)->ip.adj_index[VLIB_TX];
-
-	  /* We should never rewrite a pkt using the MISS adjacency */
-	  ASSERT (adj_index0);
 
 	  adj0 = ip_get_adjacency (lm, adj_index0);
 
@@ -2159,7 +2156,7 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	    {
 	      vlib_increment_combined_counter
 		(&adjacency_counters,
-		 cpu_index, adj_index0, 1,
+		 thread_index, adj_index0, 1,
 		 vlib_buffer_length_in_chain (vm, p0) + rw_len0);
 	    }
 
@@ -2182,8 +2179,10 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	      vnet_buffer (p0)->sw_if_index[VLIB_TX] = tx_sw_if_index0;
 	      next0 = adj0[0].rewrite_header.next_index;
 
-	      vnet_feature_arc_start (lm->output_feature_arc_index,
-				      tx_sw_if_index0, &next0, p0);
+	      if (PREDICT_FALSE
+		  (adj0[0].rewrite_header.flags & VNET_REWRITE_HAS_FEATURES))
+		vnet_feature_arc_start (lm->output_feature_arc_index,
+					tx_sw_if_index0, &next0, p0);
 	    }
 
 	  if (is_midchain)
@@ -2192,7 +2191,7 @@ ip6_rewrite_inline (vlib_main_t * vm,
 	    }
 	  if (is_mcast)
 	    {
-	      vnet_fixup_one_header (adj0[0], &ip0->dst_address, ip0, 0);
+	      vnet_fixup_one_header (adj0[0], &ip0->dst_address, ip0);
 	    }
 
 	  p0->error = error_node->errors[error0];
@@ -2247,6 +2246,16 @@ ip6_midchain (vlib_main_t * vm,
     return ip6_rewrite_inline (vm, node, frame, 0, 1, 0);
 }
 
+static uword
+ip6_mcast_midchain (vlib_main_t * vm,
+		    vlib_node_runtime_t * node, vlib_frame_t * frame)
+{
+  if (adj_are_counters_enabled ())
+    return ip6_rewrite_inline (vm, node, frame, 1, 1, 1);
+  else
+    return ip6_rewrite_inline (vm, node, frame, 1, 1, 1);
+}
+
 /* *INDENT-OFF* */
 VLIB_REGISTER_NODE (ip6_midchain_node) =
 {
@@ -2290,6 +2299,19 @@ VLIB_REGISTER_NODE (ip6_rewrite_mcast_node) =
 /* *INDENT-ON* */
 
 VLIB_NODE_FUNCTION_MULTIARCH (ip6_rewrite_mcast_node, ip6_rewrite_mcast);
+
+/* *INDENT-OFF* */
+VLIB_REGISTER_NODE (ip6_mcast_midchain_node, static) =
+{
+  .function = ip6_mcast_midchain,
+  .name = "ip6-mcast-midchain",
+  .vector_size = sizeof (u32),
+  .format_trace = format_ip6_rewrite_trace,
+  .sibling_of = "ip6-rewrite",
+};
+/* *INDENT-ON* */
+
+VLIB_NODE_FUNCTION_MULTIARCH (ip6_mcast_midchain_node, ip6_mcast_midchain);
 
 /*
  * Hop-by-Hop handling

@@ -96,8 +96,8 @@ _(MEMIF_DUMP, memif_dump)                                \
  * @brief Message handler for memif_create API.
  * @param mp vl_api_memif_create_t * mp the api message
  */
-void vl_api_memif_create_t_handler
-  (vl_api_memif_create_t * mp)
+void
+vl_api_memif_create_t_handler (vl_api_memif_create_t * mp)
 {
   memif_main_t *mm = &memif_main;
   vlib_main_t *vm = vlib_get_main ();
@@ -112,11 +112,11 @@ void vl_api_memif_create_t_handler
 
   /* socket filename */
   mp->socket_filename[ARRAY_LEN (mp->socket_filename) - 1] = 0;
-  if (strlen ((char*)mp->socket_filename) > 0)
+  if (strlen ((char *) mp->socket_filename) > 0)
     {
       vec_validate (args.socket_filename,
-		    strlen ((char *)mp->socket_filename));
-      strncpy ((char *)args.socket_filename, (char *)mp->socket_filename,
+		    strlen ((char *) mp->socket_filename));
+      strncpy ((char *) args.socket_filename, (char *) mp->socket_filename,
 	       vec_len (args.socket_filename));
     }
 
@@ -152,18 +152,20 @@ void vl_api_memif_create_t_handler
   rv = memif_create_if (vm, &args);
 
 reply:
+  /* *INDENT-OFF* */
   REPLY_MACRO2 (VL_API_MEMIF_CREATE_REPLY,
-  ({
-     rmp->sw_if_index = htonl (args.sw_if_index);
-  }));
+    ({
+       rmp->sw_if_index = htonl (args.sw_if_index);
+    }));
+  /* *INDENT-ON* */
 }
 
 /**
  * @brief Message handler for memif_delete API.
  * @param mp vl_api_memif_delete_t * mp the api message
  */
-void vl_api_memif_delete_t_handler
-  (vl_api_memif_delete_t * mp)
+void
+vl_api_memif_delete_t_handler (vl_api_memif_delete_t * mp)
 {
   memif_main_t *mm = &memif_main;
   memif_if_t *mif;
@@ -172,14 +174,16 @@ void vl_api_memif_delete_t_handler
   u32 sw_if_index = ntohl (mp->sw_if_index);
   int rv = 0;
 
+  /* *INDENT-OFF* */
   pool_foreach (mif, mm->interfaces,
-  ({
-    if (sw_if_index == mif->sw_if_index)
-      {
-        rv = memif_delete_if (vm, mif->key);
-        goto reply;
-      }
-  }));
+    ({
+      if (sw_if_index == mif->sw_if_index)
+	{
+	  rv = memif_delete_if (vm, mif->key);
+	  goto reply;
+	}
+    }));
+  /* *INDENT-ON* */
 
   rv = VNET_API_ERROR_INVALID_SW_IF_INDEX;
 
@@ -189,7 +193,7 @@ reply:
 
 static void
 send_memif_details (unix_shared_memory_queue_t * q,
-		    memif_if_t *mif,
+		    memif_if_t * mif,
 		    vnet_sw_interface_t * swif,
 		    u8 * interface_name, u32 context)
 {
@@ -230,8 +234,8 @@ send_memif_details (unix_shared_memory_queue_t * q,
  * @brief Message handler for memif_dump API.
  * @param mp vl_api_memif_dump_t * mp the api message
  */
-void vl_api_memif_dump_t_handler
-  (vl_api_memif_dump_t * mp)
+void
+vl_api_memif_dump_t_handler (vl_api_memif_dump_t * mp)
 {
   memif_main_t *mm = &memif_main;
   vnet_main_t *vnm = vnet_get_main ();
@@ -244,17 +248,19 @@ void vl_api_memif_dump_t_handler
   if (q == 0)
     return;
 
+  /* *INDENT-OFF* */
   pool_foreach (mif, mm->interfaces,
-  ({
-    swif = vnet_get_sw_interface (vnm, mif->sw_if_index);
+    ({
+      swif = vnet_get_sw_interface (vnm, mif->sw_if_index);
 
-    if_name = format (if_name, "%U%c",
-                      format_vnet_sw_interface_name,
-                      vnm, swif, 0);
+      if_name = format (if_name, "%U%c",
+			format_vnet_sw_interface_name,
+			vnm, swif, 0);
 
-    send_memif_details (q, mif, swif, if_name, mp->context);
-    _vec_len (if_name) = 0;
-  }));
+      send_memif_details (q, mif, swif, if_name, mp->context);
+      _vec_len (if_name) = 0;
+    }));
+  /* *INDENT-ON* */
 
   vec_free (if_name);
 }
@@ -263,8 +269,8 @@ void vl_api_memif_dump_t_handler
  * @brief Message handler for memif_details API.
  * @param mp vl_api_memif_details_t * mp the api message
  */
-void vl_api_memif_details_t_handler
-  (vl_api_memif_details_t * mp)
+void
+vl_api_memif_details_t_handler (vl_api_memif_details_t * mp)
 {
   clib_warning ("BUG");
 }
@@ -295,7 +301,7 @@ memif_plugin_api_hookup (vlib_main_t * vm)
 
   /* Ask for a correctly-sized block of API message decode slots */
   mm->msg_id_base = vl_msg_api_get_msg_ids
-	((char *) name, VL_MSG_FIRST_AVAILABLE);
+    ((char *) name, VL_MSG_FIRST_AVAILABLE);
 
 #define _(N,n)                                                  \
     vl_msg_api_set_handlers((VL_API_##N + mm->msg_id_base),     \
@@ -311,7 +317,7 @@ memif_plugin_api_hookup (vlib_main_t * vm)
   /*
    * Set up the (msg_name, crc, message-id) table
    */
-  setup_message_id_table(mm, am);
+  setup_message_id_table (mm, am);
 
   vec_free (name);
   return 0;

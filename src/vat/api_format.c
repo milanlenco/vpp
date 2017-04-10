@@ -403,6 +403,46 @@ api_unformat_sw_if_index (unformat_input_t * input, va_list * args)
 }
 #endif /* VPP_API_TEST_BUILTIN */
 
+#define VHOST_USER_POLLING_MODE   0
+#define VHOST_USER_INTERRUPT_MODE 1
+#define VHOST_USER_ADAPTIVE_MODE  2
+
+static u8 *
+api_format_vhost_user_operation_mode (u8 * s, va_list * va)
+{
+  int operation_mode = va_arg (*va, int);
+
+  switch (operation_mode)
+    {
+    case VHOST_USER_POLLING_MODE:
+      s = format (s, "%-9s", "polling");
+      break;
+    case VHOST_USER_INTERRUPT_MODE:
+      s = format (s, "%-9s", "interrupt");
+      break;
+    default:
+      s = format (s, "%-9s", "invalid");
+    }
+  return s;
+}
+
+static uword
+api_unformat_vhost_user_operation_mode (unformat_input_t * input,
+					va_list * args)
+{
+  u8 *operation_mode = va_arg (*args, u8 *);
+  uword rc = 1;
+
+  if (unformat (input, "interrupt"))
+    *operation_mode = VHOST_USER_INTERRUPT_MODE;
+  else if (unformat (input, "polling"))
+    *operation_mode = VHOST_USER_POLLING_MODE;
+  else
+    rc = 0;
+
+  return rc;
+}
+
 static uword
 unformat_policer_rate_type (unformat_input_t * input, va_list * args)
 {
@@ -1255,9 +1295,9 @@ static void
 vl_api_ip4_arp_event_t_handler (vl_api_ip4_arp_event_t * mp)
 {
   u32 sw_if_index = ntohl (mp->sw_if_index);
-  errmsg ("arp %s event: address %U new mac %U sw_if_index %d",
+  errmsg ("arp %s event: pid %d address %U new mac %U sw_if_index %d\n",
 	  mp->mac_ip ? "mac/ip binding" : "address resolution",
-	  format_ip4_address, &mp->address,
+	  ntohl (mp->pid), format_ip4_address, &mp->address,
 	  format_ethernet_address, mp->new_mac, sw_if_index);
 }
 
@@ -1271,9 +1311,9 @@ static void
 vl_api_ip6_nd_event_t_handler (vl_api_ip6_nd_event_t * mp)
 {
   u32 sw_if_index = ntohl (mp->sw_if_index);
-  errmsg ("ip6 nd %s event: address %U new mac %U sw_if_index %d",
+  errmsg ("ip6 nd %s event: pid %d address %U new mac %U sw_if_index %d\n",
 	  mp->mac_ip ? "mac/ip binding" : "address resolution",
-	  format_ip6_address, mp->address,
+	  ntohl (mp->pid), format_ip6_address, mp->address,
 	  format_ethernet_address, mp->new_mac, sw_if_index);
 }
 
@@ -1415,6 +1455,39 @@ static void vl_api_control_ping_reply_t_handler_json
     }
 
   vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_bridge_domain_set_mac_age_reply_t_handler
+  (vl_api_bridge_domain_set_mac_age_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  i32 retval = ntohl (mp->retval);
+  if (vam->async_mode)
+    {
+      vam->async_errors += (retval < 0);
+    }
+  else
+    {
+      vam->retval = retval;
+      vam->result_ready = 1;
+    }
+}
+
+static void vl_api_bridge_domain_set_mac_age_reply_t_handler_json
+  (vl_api_bridge_domain_set_mac_age_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t node;
+
+  vat_json_init_object (&node);
+  vat_json_object_add_int (&node, "retval", ntohl (mp->retval));
+
+  vat_json_print (vam->ofp, &node);
+  vat_json_free (&node);
+
+  vam->retval = ntohl (mp->retval);
   vam->result_ready = 1;
 }
 
@@ -1985,7 +2058,7 @@ vl_api_dhcp_compl_event_t_handler (vl_api_dhcp_compl_event_t * mp)
 {
   errmsg ("DHCP compl event: pid %d %s hostname %s host_addr %U "
 	  "router_addr %U host_mac %U",
-	  mp->pid, mp->is_ipv6 ? "ipv6" : "ipv4", mp->hostname,
+	  ntohl (mp->pid), mp->is_ipv6 ? "ipv6" : "ipv4", mp->hostname,
 	  format_ip4_address, &mp->host_address,
 	  format_ip4_address, &mp->router_address,
 	  format_ethernet_address, mp->host_mac);
@@ -2611,6 +2684,92 @@ vl_api_one_eid_table_details_t_handler_json (vl_api_one_eid_table_details_t
 }
 
 static void
+vl_api_one_stats_details_t_handler (vl_api_one_stats_details_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  u8 *seid = 0, *deid = 0;
+  u8 *(*format_ip_address_fcn) (u8 *, va_list *) = 0;
+
+  deid = format (0, "%U", format_lisp_eid_vat,
+		 mp->eid_type, mp->deid, mp->deid_pref_len, 0, 0, 0);
+
+  seid = format (0, "%U", format_lisp_eid_vat,
+		 mp->eid_type, mp->seid, mp->seid_pref_len, 0, 0, 0);
+
+  vec_add1 (deid, 0);
+  vec_add1 (seid, 0);
+
+  if (mp->is_ip4)
+    format_ip_address_fcn = format_ip4_address;
+  else
+    format_ip_address_fcn = format_ip6_address;
+
+
+  print (vam->ofp, "([%d] %s %s) (%U %U) %u %u",
+	 clib_net_to_host_u32 (mp->vni),
+	 seid, deid,
+	 format_ip_address_fcn, mp->lloc,
+	 format_ip_address_fcn, mp->rloc,
+	 clib_net_to_host_u32 (mp->pkt_count),
+	 clib_net_to_host_u32 (mp->bytes));
+
+  vec_free (deid);
+  vec_free (seid);
+}
+
+static void
+vl_api_one_stats_details_t_handler_json (vl_api_one_stats_details_t * mp)
+{
+  struct in6_addr ip6;
+  struct in_addr ip4;
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t *node = 0;
+  u8 *deid = 0, *seid = 0;
+
+  if (VAT_JSON_ARRAY != vam->json_tree.type)
+    {
+      ASSERT (VAT_JSON_NONE == vam->json_tree.type);
+      vat_json_init_array (&vam->json_tree);
+    }
+  node = vat_json_array_add (&vam->json_tree);
+
+  vat_json_init_object (node);
+  deid = format (0, "%U", format_lisp_eid_vat,
+		 mp->eid_type, mp->deid, mp->deid_pref_len, 0, 0, 0);
+
+  seid = format (0, "%U", format_lisp_eid_vat,
+		 mp->eid_type, mp->seid, mp->seid_pref_len, 0, 0, 0);
+
+  vec_add1 (deid, 0);
+  vec_add1 (seid, 0);
+
+  vat_json_object_add_string_copy (node, "seid", seid);
+  vat_json_object_add_string_copy (node, "deid", deid);
+  vat_json_object_add_uint (node, "vni", clib_net_to_host_u32 (mp->vni));
+
+  if (mp->is_ip4)
+    {
+      clib_memcpy (&ip4, mp->lloc, sizeof (ip4));
+      vat_json_object_add_ip4 (node, "lloc", ip4);
+      clib_memcpy (&ip4, mp->rloc, sizeof (ip4));
+      vat_json_object_add_ip4 (node, "rloc", ip4);
+    }
+  else
+    {
+      clib_memcpy (&ip6, mp->lloc, sizeof (ip6));
+      vat_json_object_add_ip6 (node, "lloc", ip6);
+      clib_memcpy (&ip6, mp->rloc, sizeof (ip6));
+      vat_json_object_add_ip6 (node, "rloc", ip6);
+    }
+  vat_json_object_add_uint (node, "pkt_count",
+			    clib_net_to_host_u32 (mp->pkt_count));
+  vat_json_object_add_uint (node, "bytes", clib_net_to_host_u32 (mp->bytes));
+
+  vec_free (deid);
+  vec_free (seid);
+}
+
+static void
   vl_api_one_eid_table_map_details_t_handler
   (vl_api_one_eid_table_map_details_t * mp)
 {
@@ -2729,6 +2888,42 @@ static void
   int retval = clib_net_to_host_u32 (mp->retval);
 
   u8 *s = format (0, "%s", mp->is_enabled ? "enabled" : "disabled");
+  vat_json_init_object (node);
+  vat_json_object_add_string_copy (node, "state", s);
+
+  vat_json_print (vam->ofp, node);
+  vat_json_free (node);
+
+  vam->retval = retval;
+  vam->result_ready = 1;
+  vec_free (s);
+}
+
+static void
+  vl_api_show_one_stats_enable_disable_reply_t_handler
+  (vl_api_show_one_stats_enable_disable_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  int retval = clib_net_to_host_u32 (mp->retval);
+
+  if (retval)
+    goto end;
+
+  print (vam->ofp, "%s", mp->is_en ? "enabled" : "disabled");
+end:
+  vam->retval = retval;
+  vam->result_ready = 1;
+}
+
+static void
+  vl_api_show_one_stats_enable_disable_reply_t_handler_json
+  (vl_api_show_one_stats_enable_disable_reply_t * mp)
+{
+  vat_main_t *vam = &vat_main;
+  vat_json_node_t _node, *node = &_node;
+  int retval = clib_net_to_host_u32 (mp->retval);
+
+  u8 *s = format (0, "%s", mp->is_en ? "enabled" : "disabled");
   vat_json_init_object (node);
   vat_json_object_add_string_copy (node, "state", s);
 
@@ -3508,8 +3703,8 @@ static void vl_api_policer_details_t_handler_json
   vat_json_object_add_string_copy (node, "name", mp->name);
   vat_json_object_add_uint (node, "cir", ntohl (mp->cir));
   vat_json_object_add_uint (node, "eir", ntohl (mp->eir));
-  vat_json_object_add_uint (node, "cb", ntohl (mp->cb));
-  vat_json_object_add_uint (node, "eb", ntohl (mp->eb));
+  vat_json_object_add_uint (node, "cb", clib_net_to_host_u64 (mp->cb));
+  vat_json_object_add_uint (node, "eb", clib_net_to_host_u64 (mp->eb));
   vat_json_object_add_string_copy (node, "rate_type", rate_type_str);
   vat_json_object_add_string_copy (node, "round_type", round_type_str);
   vat_json_object_add_string_copy (node, "type", type_str);
@@ -3956,6 +4151,8 @@ _(sw_interface_set_l2_bridge_reply)                     \
 _(bridge_domain_add_del_reply)                          \
 _(sw_interface_set_l2_xconnect_reply)                   \
 _(l2fib_add_del_reply)                                  \
+_(l2fib_flush_int_reply)                                \
+_(l2fib_flush_bd_reply)                                 \
 _(ip_add_del_route_reply)                               \
 _(ip_mroute_add_del_reply)                              \
 _(mpls_route_add_del_reply)                             \
@@ -4040,6 +4237,7 @@ _(one_map_request_mode_reply)                           \
 _(one_add_del_map_request_itr_rlocs_reply)              \
 _(one_eid_table_add_del_map_reply)                      \
 _(one_use_petr_reply)                                   \
+_(one_stats_enable_disable_reply)                       \
 _(gpe_add_del_fwd_entry_reply)                          \
 _(gpe_enable_disable_reply)                             \
 _(gpe_set_encap_mode_reply)                             \
@@ -4122,7 +4320,10 @@ _(SW_INTERFACE_SET_L2_BRIDGE_REPLY,                                     \
 _(BRIDGE_DOMAIN_ADD_DEL_REPLY, bridge_domain_add_del_reply)             \
 _(BRIDGE_DOMAIN_DETAILS, bridge_domain_details)                         \
 _(BRIDGE_DOMAIN_SW_IF_DETAILS, bridge_domain_sw_if_details)             \
+_(BRIDGE_DOMAIN_SET_MAC_AGE_REPLY, bridge_domain_set_mac_age_reply)     \
 _(L2FIB_ADD_DEL_REPLY, l2fib_add_del_reply)                             \
+_(L2FIB_FLUSH_INT_REPLY, l2fib_flush_int_reply)                         \
+_(L2FIB_FLUSH_BD_REPLY, l2fib_flush_bd_reply)                           \
 _(L2_FLAGS_REPLY, l2_flags_reply)                                       \
 _(BRIDGE_FLAGS_REPLY, bridge_flags_reply)                               \
 _(TAP_CONNECT_REPLY, tap_connect_reply)					\
@@ -4263,6 +4464,10 @@ _(ONE_EID_TABLE_VNI_DETAILS, one_eid_table_vni_details)                 \
 _(ONE_MAP_RESOLVER_DETAILS, one_map_resolver_details)                   \
 _(ONE_MAP_SERVER_DETAILS, one_map_server_details)                       \
 _(ONE_ADJACENCIES_GET_REPLY, one_adjacencies_get_reply)                 \
+_(ONE_STATS_DETAILS, one_stats_details)                                 \
+_(ONE_STATS_ENABLE_DISABLE_REPLY, one_stats_enable_disable_reply)       \
+_(SHOW_ONE_STATS_ENABLE_DISABLE_REPLY,                                  \
+  show_one_stats_enable_disable_reply)                                  \
 _(GPE_SET_ENCAP_MODE_REPLY, gpe_set_encap_mode_reply)                   \
 _(GPE_GET_ENCAP_MODE_REPLY, gpe_get_encap_mode_reply)                   \
 _(GPE_ADD_DEL_IFACE_REPLY, gpe_add_del_iface_reply)                     \
@@ -5714,6 +5919,70 @@ api_bridge_domain_add_del (vat_main_t * vam)
 }
 
 static int
+api_l2fib_flush_bd (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_l2fib_flush_bd_t *mp;
+  u32 bd_id = ~0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "bd_id %d", &bd_id));
+      else
+	break;
+    }
+
+  if (bd_id == ~0)
+    {
+      errmsg ("missing bridge domain");
+      return -99;
+    }
+
+  M (L2FIB_FLUSH_BD, mp);
+
+  mp->bd_id = htonl (bd_id);
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
+static int
+api_l2fib_flush_int (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_l2fib_flush_int_t *mp;
+  u32 sw_if_index = ~0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "sw_if_index %d", &sw_if_index));
+      else
+	if (unformat (i, "%U", api_unformat_sw_if_index, vam, &sw_if_index));
+      else
+	break;
+    }
+
+  if (sw_if_index == ~0)
+    {
+      errmsg ("missing interface name or sw_if_index");
+      return -99;
+    }
+
+  M (L2FIB_FLUSH_INT, mp);
+
+  mp->sw_if_index = ntohl (sw_if_index);
+
+  S (mp);
+  W (ret);
+  return ret;
+}
+
+static int
 api_l2fib_add_del (vat_main_t * vam)
 {
   unformat_input_t *i = vam->input;
@@ -5861,6 +6130,46 @@ api_l2fib_add_del (vat_main_t * vam)
     }
   /* Return the good/bad news */
   return (vam->retval);
+}
+
+static int
+api_bridge_domain_set_mac_age (vat_main_t * vam)
+{
+  unformat_input_t *i = vam->input;
+  vl_api_bridge_domain_set_mac_age_t *mp;
+  u32 bd_id = ~0;
+  u32 mac_age = 0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (i, "bd_id %d", &bd_id));
+      else if (unformat (i, "mac-age %d", &mac_age));
+      else
+	break;
+    }
+
+  if (bd_id == ~0)
+    {
+      errmsg ("missing bridge domain");
+      return -99;
+    }
+
+  if (mac_age > 255)
+    {
+      errmsg ("mac age must be less than 256 ");
+      return -99;
+    }
+
+  M (BRIDGE_DOMAIN_SET_MAC_AGE, mp);
+
+  mp->bd_id = htonl (bd_id);
+  mp->mac_age = (u8) mac_age;
+
+  S (mp);
+  W (ret);
+  return ret;
 }
 
 static int
@@ -7868,12 +8177,12 @@ api_dhcp_client_config (vat_main_t * vam)
   /* Construct the API message */
   M (DHCP_CLIENT_CONFIG, mp);
 
-  mp->sw_if_index = ntohl (sw_if_index);
+  mp->sw_if_index = htonl (sw_if_index);
   clib_memcpy (mp->hostname, hostname, vec_len (hostname));
   vec_free (hostname);
   mp->is_add = is_add;
   mp->want_dhcp_event = disable_event ? 0 : 1;
-  mp->pid = getpid ();
+  mp->pid = htonl (getpid ());
 
   /* send it... */
   S (mp);
@@ -10671,10 +10980,8 @@ static void vl_api_vxlan_tunnel_details_t_handler
   (vl_api_vxlan_tunnel_details_t * mp)
 {
   vat_main_t *vam = &vat_main;
-  ip46_address_t src, dst;
-
-  ip46_from_addr_buf (mp->is_ipv6, mp->src_address, &src);
-  ip46_from_addr_buf (mp->is_ipv6, mp->dst_address, &dst);
+  ip46_address_t src = to_ip46 (mp->is_ipv6, mp->dst_address);
+  ip46_address_t dst = to_ip46 (mp->is_ipv6, mp->src_address);
 
   print (vam->ofp, "%11d%24U%24U%14d%18d%13d%19d",
 	 ntohl (mp->sw_if_index),
@@ -10779,21 +11086,45 @@ api_gre_add_del_tunnel (vat_main_t * vam)
   unformat_input_t *line_input = vam->input;
   vl_api_gre_add_del_tunnel_t *mp;
   ip4_address_t src4, dst4;
+  ip6_address_t src6, dst6;
   u8 is_add = 1;
+  u8 ipv4_set = 0;
+  u8 ipv6_set = 0;
   u8 teb = 0;
   u8 src_set = 0;
   u8 dst_set = 0;
   u32 outer_fib_id = 0;
   int ret;
 
+  memset (&src4, 0, sizeof src4);
+  memset (&dst4, 0, sizeof dst4);
+  memset (&src6, 0, sizeof src6);
+  memset (&dst6, 0, sizeof dst6);
+
   while (unformat_check_input (line_input) != UNFORMAT_END_OF_INPUT)
     {
       if (unformat (line_input, "del"))
 	is_add = 0;
       else if (unformat (line_input, "src %U", unformat_ip4_address, &src4))
-	src_set = 1;
+	{
+	  src_set = 1;
+	  ipv4_set = 1;
+	}
       else if (unformat (line_input, "dst %U", unformat_ip4_address, &dst4))
-	dst_set = 1;
+	{
+	  dst_set = 1;
+	  ipv4_set = 1;
+	}
+      else if (unformat (line_input, "src %U", unformat_ip6_address, &src6))
+	{
+	  src_set = 1;
+	  ipv6_set = 1;
+	}
+      else if (unformat (line_input, "dst %U", unformat_ip6_address, &dst6))
+	{
+	  dst_set = 1;
+	  ipv6_set = 1;
+	}
       else if (unformat (line_input, "outer-fib-id %d", &outer_fib_id))
 	;
       else if (unformat (line_input, "teb"))
@@ -10815,15 +11146,29 @@ api_gre_add_del_tunnel (vat_main_t * vam)
       errmsg ("tunnel dst address not specified");
       return -99;
     }
+  if (ipv4_set && ipv6_set)
+    {
+      errmsg ("both IPv4 and IPv6 addresses specified");
+      return -99;
+    }
 
 
   M (GRE_ADD_DEL_TUNNEL, mp);
 
-  clib_memcpy (&mp->src_address, &src4, sizeof (src4));
-  clib_memcpy (&mp->dst_address, &dst4, sizeof (dst4));
+  if (ipv4_set)
+    {
+      clib_memcpy (&mp->src_address, &src4, 4);
+      clib_memcpy (&mp->dst_address, &dst4, 4);
+    }
+  else
+    {
+      clib_memcpy (&mp->src_address, &src6, 16);
+      clib_memcpy (&mp->dst_address, &dst6, 16);
+    }
   mp->outer_fib_id = ntohl (outer_fib_id);
   mp->is_add = is_add;
   mp->teb = teb;
+  mp->is_ipv6 = ipv6_set;
 
   S (mp);
   W (ret);
@@ -10834,11 +11179,13 @@ static void vl_api_gre_tunnel_details_t_handler
   (vl_api_gre_tunnel_details_t * mp)
 {
   vat_main_t *vam = &vat_main;
+  ip46_address_t src = to_ip46 (mp->is_ipv6, mp->src_address);
+  ip46_address_t dst = to_ip46 (mp->is_ipv6, mp->dst_address);
 
-  print (vam->ofp, "%11d%15U%15U%6d%14d",
+  print (vam->ofp, "%11d%24U%24U%6d%14d",
 	 ntohl (mp->sw_if_index),
-	 format_ip4_address, &mp->src_address,
-	 format_ip4_address, &mp->dst_address,
+	 format_ip46_address, &src, IP46_TYPE_ANY,
+	 format_ip46_address, &dst, IP46_TYPE_ANY,
 	 mp->teb, ntohl (mp->outer_fib_id));
 }
 
@@ -10848,6 +11195,7 @@ static void vl_api_gre_tunnel_details_t_handler_json
   vat_main_t *vam = &vat_main;
   vat_json_node_t *node = NULL;
   struct in_addr ip4;
+  struct in6_addr ip6;
 
   if (VAT_JSON_ARRAY != vam->json_tree.type)
     {
@@ -10858,12 +11206,23 @@ static void vl_api_gre_tunnel_details_t_handler_json
 
   vat_json_init_object (node);
   vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->sw_if_index));
-  clib_memcpy (&ip4, &mp->src_address, sizeof (ip4));
-  vat_json_object_add_ip4 (node, "src_address", ip4);
-  clib_memcpy (&ip4, &mp->dst_address, sizeof (ip4));
-  vat_json_object_add_ip4 (node, "dst_address", ip4);
+  if (!mp->is_ipv6)
+    {
+      clib_memcpy (&ip4, &mp->src_address, sizeof (ip4));
+      vat_json_object_add_ip4 (node, "src_address", ip4);
+      clib_memcpy (&ip4, &mp->dst_address, sizeof (ip4));
+      vat_json_object_add_ip4 (node, "dst_address", ip4);
+    }
+  else
+    {
+      clib_memcpy (&ip6, &mp->src_address, sizeof (ip6));
+      vat_json_object_add_ip6 (node, "src_address", ip6);
+      clib_memcpy (&ip6, &mp->dst_address, sizeof (ip6));
+      vat_json_object_add_ip6 (node, "dst_address", ip6);
+    }
   vat_json_object_add_uint (node, "teb", mp->teb);
   vat_json_object_add_uint (node, "outer_fib_id", ntohl (mp->outer_fib_id));
+  vat_json_object_add_uint (node, "is_ipv6", mp->is_ipv6);
 }
 
 static int
@@ -10892,7 +11251,7 @@ api_gre_tunnel_dump (vat_main_t * vam)
 
   if (!vam->json_output)
     {
-      print (vam->ofp, "%11s%15s%15s%6s%14s",
+      print (vam->ofp, "%11s%24s%24s%6s%14s",
 	     "sw_if_index", "src_address", "dst_address", "teb",
 	     "outer_fib_id");
     }
@@ -11049,6 +11408,7 @@ api_create_vhost_user_if (vat_main_t * vam)
   u8 use_custom_mac = 0;
   u8 *tag = 0;
   int ret;
+  u8 operation_mode = VHOST_USER_POLLING_MODE;
 
   /* Shut up coverity */
   memset (hwaddr, 0, sizeof (hwaddr));
@@ -11066,6 +11426,10 @@ api_create_vhost_user_if (vat_main_t * vam)
       else if (unformat (i, "server"))
 	is_server = 1;
       else if (unformat (i, "tag %s", &tag))
+	;
+      else if (unformat (i, "mode %U",
+			 api_unformat_vhost_user_operation_mode,
+			 &operation_mode))
 	;
       else
 	break;
@@ -11086,6 +11450,7 @@ api_create_vhost_user_if (vat_main_t * vam)
 
   M (CREATE_VHOST_USER_IF, mp);
 
+  mp->operation_mode = operation_mode;
   mp->is_server = is_server;
   clib_memcpy (mp->sock_filename, file_name, vec_len (file_name));
   vec_free (file_name);
@@ -11117,6 +11482,7 @@ api_modify_vhost_user_if (vat_main_t * vam)
   u8 sw_if_index_set = 0;
   u32 sw_if_index = (u32) ~ 0;
   int ret;
+  u8 operation_mode = VHOST_USER_POLLING_MODE;
 
   while (unformat_check_input (i) != UNFORMAT_END_OF_INPUT)
     {
@@ -11132,6 +11498,10 @@ api_modify_vhost_user_if (vat_main_t * vam)
 	;
       else if (unformat (i, "server"))
 	is_server = 1;
+      else if (unformat (i, "mode %U",
+			 api_unformat_vhost_user_operation_mode,
+			 &operation_mode))
+	;
       else
 	break;
     }
@@ -11157,6 +11527,7 @@ api_modify_vhost_user_if (vat_main_t * vam)
 
   M (MODIFY_VHOST_USER_IF, mp);
 
+  mp->operation_mode = operation_mode;
   mp->sw_if_index = ntohl (sw_if_index);
   mp->is_server = is_server;
   clib_memcpy (mp->sock_filename, file_name, vec_len (file_name));
@@ -11212,11 +11583,12 @@ static void vl_api_sw_interface_vhost_user_details_t_handler
 {
   vat_main_t *vam = &vat_main;
 
-  print (vam->ofp, "%-25s %3" PRIu32 " %6" PRIu32 " %8x %6d %7d %s",
+  print (vam->ofp, "%-25s %3" PRIu32 " %6" PRIu32 " %8x %6d %7d %U %s",
 	 (char *) mp->interface_name,
 	 ntohl (mp->sw_if_index), ntohl (mp->virtio_net_hdr_sz),
 	 clib_net_to_host_u64 (mp->features), mp->is_server,
-	 ntohl (mp->num_regions), (char *) mp->sock_filename);
+	 ntohl (mp->num_regions), api_format_vhost_user_operation_mode,
+	 mp->operation_mode, (char *) mp->sock_filename);
   print (vam->ofp, "    Status: '%s'", strerror (ntohl (mp->sock_errno)));
 }
 
@@ -11245,6 +11617,7 @@ static void vl_api_sw_interface_vhost_user_details_t_handler_json
   vat_json_object_add_string_copy (node, "sock_filename", mp->sock_filename);
   vat_json_object_add_uint (node, "num_regions", ntohl (mp->num_regions));
   vat_json_object_add_uint (node, "sock_errno", ntohl (mp->sock_errno));
+  vat_json_object_add_uint (node, "mode", mp->operation_mode);
 }
 
 static int
@@ -11254,7 +11627,8 @@ api_sw_interface_vhost_user_dump (vat_main_t * vam)
   vl_api_control_ping_t *mp_ping;
   int ret;
   print (vam->ofp,
-	 "Interface name           idx hdr_sz features server regions filename");
+	 "Interface name            idx hdr_sz features server regions mode"
+	 "      filename");
 
   /* Get list of vhost-user interfaces */
   M (SW_INTERFACE_VHOST_USER_DUMP, mp);
@@ -11653,7 +12027,7 @@ api_want_ip4_arp_events (vat_main_t * vam)
 
   M (WANT_IP4_ARP_EVENTS, mp);
   mp->enable_disable = enable_disable;
-  mp->pid = getpid ();
+  mp->pid = htonl (getpid ());
   mp->address = address.as_u32;
 
   S (mp);
@@ -11689,7 +12063,7 @@ api_want_ip6_nd_events (vat_main_t * vam)
 
   M (WANT_IP6_ND_EVENTS, mp);
   mp->enable_disable = enable_disable;
-  mp->pid = getpid ();
+  mp->pid = htonl (getpid ());
   clib_memcpy (mp->address, &address, sizeof (ip6_address_t));
 
   S (mp);
@@ -14217,6 +14591,64 @@ api_show_one_rloc_probe_state (vat_main_t * vam)
 #define api_show_lisp_rloc_probe_state api_show_one_rloc_probe_state
 
 static int
+api_one_stats_enable_disable (vat_main_t * vam)
+{
+  vl_api_one_stats_enable_disable_t *mp;
+  unformat_input_t *input = vam->input;
+  u8 is_set = 0;
+  u8 is_en = 0;
+  int ret;
+
+  /* Parse args required to build the message */
+  while (unformat_check_input (input) != UNFORMAT_END_OF_INPUT)
+    {
+      if (unformat (input, "enable"))
+	{
+	  is_set = 1;
+	  is_en = 1;
+	}
+      else if (unformat (input, "disable"))
+	{
+	  is_set = 1;
+	}
+      else
+	break;
+    }
+
+  if (!is_set)
+    {
+      errmsg ("Value not set");
+      return -99;
+    }
+
+  M (ONE_STATS_ENABLE_DISABLE, mp);
+  mp->is_en = is_en;
+
+  /* send */
+  S (mp);
+
+  /* wait for reply */
+  W (ret);
+  return ret;
+}
+
+static int
+api_show_one_stats_enable_disable (vat_main_t * vam)
+{
+  vl_api_show_one_stats_enable_disable_t *mp;
+  int ret;
+
+  M (SHOW_ONE_STATS_ENABLE_DISABLE, mp);
+
+  /* send */
+  S (mp);
+
+  /* wait for reply */
+  W (ret);
+  return ret;
+}
+
+static int
 api_show_one_map_request_mode (vat_main_t * vam)
 {
   vl_api_show_one_map_request_mode_t *mp;
@@ -15424,6 +15856,26 @@ api_one_map_resolver_dump (vat_main_t * vam)
 #define api_lisp_map_resolver_dump api_one_map_resolver_dump
 
 static int
+api_one_stats_dump (vat_main_t * vam)
+{
+  vl_api_one_stats_dump_t *mp;
+  vl_api_control_ping_t *mp_ping;
+  int ret;
+
+  M (ONE_STATS_DUMP, mp);
+  /* send it... */
+  S (mp);
+
+  /* Use a control ping for synchronization */
+  M (CONTROL_PING, mp_ping);
+  S (mp_ping);
+
+  /* Wait for a reply... */
+  W (ret);
+  return ret;
+}
+
+static int
 api_show_one_status (vat_main_t * vam)
 {
   vl_api_show_one_status_t *mp;
@@ -15917,32 +16369,82 @@ api_netmap_delete (vat_main_t * vam)
   return ret;
 }
 
-static void vl_api_mpls_tunnel_details_t_handler
-  (vl_api_mpls_tunnel_details_t * mp)
+static void
+vl_api_mpls_fib_path_print (vat_main_t * vam, vl_api_fib_path2_t * fp)
+{
+  if (fp->afi == IP46_TYPE_IP6)
+    print (vam->ofp,
+	   "  weight %d, sw_if_index %d, is_local %d, is_drop %d, "
+	   "is_unreach %d, is_prohitbit %d, afi %d, next_hop %U",
+	   ntohl (fp->weight), ntohl (fp->sw_if_index), fp->is_local,
+	   fp->is_drop, fp->is_unreach, fp->is_prohibit, fp->afi,
+	   format_ip6_address, fp->next_hop);
+  else if (fp->afi == IP46_TYPE_IP4)
+    print (vam->ofp,
+	   "  weight %d, sw_if_index %d, is_local %d, is_drop %d, "
+	   "is_unreach %d, is_prohitbit %d, afi %d, next_hop %U",
+	   ntohl (fp->weight), ntohl (fp->sw_if_index), fp->is_local,
+	   fp->is_drop, fp->is_unreach, fp->is_prohibit, fp->afi,
+	   format_ip4_address, fp->next_hop);
+}
+
+static void
+vl_api_mpls_fib_path_json_print (vat_json_node_t * node,
+				 vl_api_fib_path2_t * fp)
+{
+  struct in_addr ip4;
+  struct in6_addr ip6;
+
+  vat_json_object_add_uint (node, "weight", ntohl (fp->weight));
+  vat_json_object_add_uint (node, "sw_if_index", ntohl (fp->sw_if_index));
+  vat_json_object_add_uint (node, "is_local", fp->is_local);
+  vat_json_object_add_uint (node, "is_drop", fp->is_drop);
+  vat_json_object_add_uint (node, "is_unreach", fp->is_unreach);
+  vat_json_object_add_uint (node, "is_prohibit", fp->is_prohibit);
+  vat_json_object_add_uint (node, "next_hop_afi", fp->afi);
+  if (fp->afi == IP46_TYPE_IP4)
+    {
+      clib_memcpy (&ip4, &fp->next_hop, sizeof (ip4));
+      vat_json_object_add_ip4 (node, "next_hop", ip4);
+    }
+  else if (fp->afi == IP46_TYPE_IP6)
+    {
+      clib_memcpy (&ip6, &fp->next_hop, sizeof (ip6));
+      vat_json_object_add_ip6 (node, "next_hop", ip6);
+    }
+}
+
+static void
+vl_api_mpls_tunnel_details_t_handler (vl_api_mpls_tunnel_details_t * mp)
 {
   vat_main_t *vam = &vat_main;
-  i32 len = mp->mt_next_hop_n_labels;
+  int count = ntohl (mp->mt_count);
+  vl_api_fib_path2_t *fp;
   i32 i;
 
-  print (vam->ofp, "[%d]: via %U %d labels ",
-	 mp->tunnel_index,
-	 format_ip4_address, mp->mt_next_hop,
-	 ntohl (mp->mt_next_hop_sw_if_index));
-  for (i = 0; i < len; i++)
+  print (vam->ofp, "[%d]: sw_if_index %d via:",
+	 ntohl (mp->mt_tunnel_index), ntohl (mp->mt_sw_if_index));
+  fp = mp->mt_paths;
+  for (i = 0; i < count; i++)
     {
-      print (vam->ofp, "%u ", ntohl (mp->mt_next_hop_out_labels[i]));
+      vl_api_mpls_fib_path_print (vam, fp);
+      fp++;
     }
+
   print (vam->ofp, "");
 }
 
-static void vl_api_mpls_tunnel_details_t_handler_json
-  (vl_api_mpls_tunnel_details_t * mp)
+#define vl_api_mpls_tunnel_details_t_endian vl_noop_handler
+#define vl_api_mpls_tunnel_details_t_print vl_noop_handler
+
+static void
+vl_api_mpls_tunnel_details_t_handler_json (vl_api_mpls_tunnel_details_t * mp)
 {
   vat_main_t *vam = &vat_main;
   vat_json_node_t *node = NULL;
-  struct in_addr ip4;
+  int count = ntohl (mp->mt_count);
+  vl_api_fib_path2_t *fp;
   i32 i;
-  i32 len = mp->mt_next_hop_n_labels;
 
   if (VAT_JSON_ARRAY != vam->json_tree.type)
     {
@@ -15952,17 +16454,17 @@ static void vl_api_mpls_tunnel_details_t_handler_json
   node = vat_json_array_add (&vam->json_tree);
 
   vat_json_init_object (node);
-  vat_json_object_add_uint (node, "tunnel_index", ntohl (mp->tunnel_index));
-  clib_memcpy (&ip4, &(mp->mt_next_hop), sizeof (ip4));
-  vat_json_object_add_ip4 (node, "next_hop", ip4);
-  vat_json_object_add_uint (node, "next_hop_sw_if_index",
-			    ntohl (mp->mt_next_hop_sw_if_index));
-  vat_json_object_add_uint (node, "l2_only", ntohl (mp->mt_l2_only));
-  vat_json_object_add_uint (node, "label_count", len);
-  for (i = 0; i < len; i++)
+  vat_json_object_add_uint (node, "tunnel_index",
+			    ntohl (mp->mt_tunnel_index));
+  vat_json_object_add_uint (node, "sw_if_index", ntohl (mp->mt_sw_if_index));
+
+  vat_json_object_add_uint (node, "l2_only", mp->mt_l2_only);
+
+  fp = mp->mt_paths;
+  for (i = 0; i < count; i++)
     {
-      vat_json_object_add_uint (node, "label",
-				ntohl (mp->mt_next_hop_out_labels[i]));
+      vl_api_mpls_fib_path_json_print (node, fp);
+      fp++;
     }
 }
 
@@ -16001,6 +16503,7 @@ api_mpls_tunnel_dump (vat_main_t * vam)
 #define vl_api_mpls_fib_details_t_endian vl_noop_handler
 #define vl_api_mpls_fib_details_t_print vl_noop_handler
 
+
 static void
 vl_api_mpls_fib_details_t_handler (vl_api_mpls_fib_details_t * mp)
 {
@@ -16015,20 +16518,7 @@ vl_api_mpls_fib_details_t_handler (vl_api_mpls_fib_details_t * mp)
   fp = mp->path;
   for (i = 0; i < count; i++)
     {
-      if (fp->afi == IP46_TYPE_IP6)
-	print (vam->ofp,
-	       "  weight %d, sw_if_index %d, is_local %d, is_drop %d, "
-	       "is_unreach %d, is_prohitbit %d, afi %d, next_hop %U",
-	       ntohl (fp->weight), ntohl (fp->sw_if_index), fp->is_local,
-	       fp->is_drop, fp->is_unreach, fp->is_prohibit, fp->afi,
-	       format_ip6_address, fp->next_hop);
-      else if (fp->afi == IP46_TYPE_IP4)
-	print (vam->ofp,
-	       "  weight %d, sw_if_index %d, is_local %d, is_drop %d, "
-	       "is_unreach %d, is_prohitbit %d, afi %d, next_hop %U",
-	       ntohl (fp->weight), ntohl (fp->sw_if_index), fp->is_local,
-	       fp->is_drop, fp->is_unreach, fp->is_prohibit, fp->afi,
-	       format_ip4_address, fp->next_hop);
+      vl_api_mpls_fib_path_print (vam, fp);
       fp++;
     }
 }
@@ -16039,8 +16529,6 @@ static void vl_api_mpls_fib_details_t_handler_json
   vat_main_t *vam = &vat_main;
   int count = ntohl (mp->count);
   vat_json_node_t *node = NULL;
-  struct in_addr ip4;
-  struct in6_addr ip6;
   vl_api_fib_path2_t *fp;
   int i;
 
@@ -16059,23 +16547,8 @@ static void vl_api_mpls_fib_details_t_handler_json
   fp = mp->path;
   for (i = 0; i < count; i++)
     {
-      vat_json_object_add_uint (node, "weight", ntohl (fp->weight));
-      vat_json_object_add_uint (node, "sw_if_index", ntohl (fp->sw_if_index));
-      vat_json_object_add_uint (node, "is_local", fp->is_local);
-      vat_json_object_add_uint (node, "is_drop", fp->is_drop);
-      vat_json_object_add_uint (node, "is_unreach", fp->is_unreach);
-      vat_json_object_add_uint (node, "is_prohibit", fp->is_prohibit);
-      vat_json_object_add_uint (node, "next_hop_afi", fp->afi);
-      if (fp->afi == IP46_TYPE_IP4)
-	{
-	  clib_memcpy (&ip4, &fp->next_hop, sizeof (ip4));
-	  vat_json_object_add_ip4 (node, "next_hop", ip4);
-	}
-      else if (fp->afi == IP46_TYPE_IP6)
-	{
-	  clib_memcpy (&ip6, &fp->next_hop, sizeof (ip6));
-	  vat_json_object_add_ip6 (node, "next_hop", ip6);
-	}
+      vl_api_mpls_fib_path_json_print (node, fp);
+      fp++;
     }
 }
 
@@ -18158,14 +18631,17 @@ _(sw_interface_set_l2_xconnect,                                         \
   "rx <intfc> | rx_sw_if_index <id> tx <intfc> | tx_sw_if_index <id>\n" \
   "enable | disable")                                                   \
 _(sw_interface_set_l2_bridge,                                           \
-  "<intfc> | sw_if_index <id> bd_id <bridge-domain-id>\n"               \
+  "{<intfc> | sw_if_index <id>} bd_id <bridge-domain-id>\n"             \
   "[shg <split-horizon-group>] [bvi]\n"                                 \
   "enable | disable")                                                   \
+_(bridge_domain_set_mac_age, "bd_id <bridge-domain-id> mac-age 0-255")  \
 _(bridge_domain_add_del,                                                \
-  "bd_id <bridge-domain-id> [flood 1|0] [uu-flood 1|0] [forward 1|0] [learn 1|0] [arp-term 1|0] [del]\n") \
+  "bd_id <bridge-domain-id> [flood 1|0] [uu-flood 1|0] [forward 1|0] [learn 1|0] [arp-term 1|0] [mac-age 0-255] [del]\n") \
 _(bridge_domain_dump, "[bd_id <bridge-domain-id>]\n")                   \
 _(l2fib_add_del,                                                        \
   "mac <mac-addr> bd_id <bridge-domain-id> [del] | sw_if <intfc> | sw_if_index <id> [static] [filter] [bvi] [count <nn>]\n") \
+_(l2fib_flush_bd, "bd_id <bridge-domain-id>")                           \
+_(l2fib_flush_int, "<intfc> | sw_if_index <id>")                        \
 _(l2_flags,                                                             \
   "sw_if <intfc> | sw_if_index <id> [learn] [forward] [uu-flood] [flood]\n") \
 _(bridge_flags,                                                         \
@@ -18279,7 +18755,7 @@ _(vxlan_add_del_tunnel,                                                 \
   "vni <vni> [encap-vrf-id <nn>] [decap-next <l2|nn>] [del]")           \
 _(vxlan_tunnel_dump, "[<intfc> | sw_if_index <nn>]")                    \
 _(gre_add_del_tunnel,                                                   \
-  "src <ip4-addr> dst <ip4-addr> [outer-fib-id <nn>] [teb] [del]\n")    \
+  "src <ip-addr> dst <ip-addr> [outer-fib-id <nn>] [teb] [del]\n")    \
 _(gre_tunnel_dump, "[<intfc> | sw_if_index <nn>]")                      \
 _(l2_fib_clear_table, "")                                               \
 _(l2_interface_efp_filter, "sw_if_index <nn> enable | disable")         \
@@ -18289,10 +18765,12 @@ _(l2_interface_vlan_tag_rewrite,                                        \
   "[translate-2-[1|2]] [push_dot1q 0] tag1 <nn> tag2 <nn>")             \
 _(create_vhost_user_if,                                                 \
         "socket <filename> [server] [renumber <dev_instance>] "         \
-        "[mac <mac_address>]")                                          \
+        "[mac <mac_address>] "                                          \
+        "[mode <interrupt | polling>]")                                 \
 _(modify_vhost_user_if,                                                 \
         "<intfc> | sw_if_index <nn> socket <filename>\n"                \
-        "[server] [renumber <dev_instance>]")                           \
+        "[server] [renumber <dev_instance>] "                           \
+        "[mode <interrupt | polling>]")                                 \
 _(delete_vhost_user_if, "<intfc> | sw_if_index <nn>")                   \
 _(sw_interface_vhost_user_dump, "")                                     \
 _(show_version, "")                                                     \
@@ -18391,6 +18869,8 @@ _(one_locator_set_dump, "[local | remote]")                             \
 _(one_locator_dump, "ls_index <index> | ls_name <name>")                \
 _(one_eid_table_dump, "[eid <ipv4|ipv6>/<prefix> | <mac>] [vni] "       \
                        "[local] | [remote]")                            \
+_(one_stats_enable_disable, "enable|disalbe")                           \
+_(show_one_stats_enable_disable, "")                                    \
 _(one_eid_table_vni_dump, "")                                           \
 _(one_eid_table_map_dump, "l2|l3")                                      \
 _(one_map_resolver_dump, "")                                            \
@@ -18399,6 +18879,7 @@ _(one_adjacencies_get, "vni <vni>")                                     \
 _(show_one_rloc_probe_state, "")                                        \
 _(show_one_map_register_state, "")                                      \
 _(show_one_status, "")                                                  \
+_(one_stats_dump, "")                                                   \
 _(one_get_map_request_itr_rlocs, "")                                    \
 _(show_one_pitr, "")                                                    \
 _(show_one_use_petr, "")                                                \

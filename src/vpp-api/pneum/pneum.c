@@ -235,13 +235,14 @@ pneum_rx_resume (void)
   pneum_main_t *pm = &pneum_main;
   if (!pm->rx_thread_handle) return;
   pthread_mutex_lock(&pm->queue_lock);
-  if (rx_is_running) return;
+  if (rx_is_running) goto unlock;
   pthread_cond_signal(&pm->resume_cv);
   rx_is_running = true;
+ unlock:
   pthread_mutex_unlock(&pm->queue_lock);
 }
 
-uword *
+static uword *
 pneum_msg_table_get_hash (void)
 {
   api_main_t *am = &api_main;
@@ -460,8 +461,29 @@ pneum_write (char *p, int l)
   return (rv);
 }
 
-uint32_t
+int
 pneum_get_msg_index (unsigned char * name)
 {
   return vl_api_get_msg_index (name);
+}
+
+int
+pneum_msg_table_max_index(void)
+{
+  int max = 0;
+  hash_pair_t *hp;
+  uword *h = pneum_msg_table_get_hash();
+  hash_foreach_pair (hp, h,
+  ({
+    if (hp->value[0] > max)
+      max = hp->value[0];
+  }));
+
+  return max;
+}
+
+void
+pneum_set_error_handler (pneum_error_callback_t cb)
+{
+  if (cb) clib_error_register_handler (cb, 0);
 }

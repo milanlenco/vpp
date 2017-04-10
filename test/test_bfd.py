@@ -16,9 +16,10 @@ from scapy.layers.inet6 import IPv6
 from bfd import VppBFDAuthKey, BFD, BFDAuthType, VppBFDUDPSession, \
     BFDDiagCode, BFDState, BFD_vpp_echo
 from framework import VppTestCase, VppTestRunner, running_extended_tests
-from vpp_pg_interface import CaptureTimeoutError
+from vpp_pg_interface import CaptureTimeoutError, is_ipv6_misc
 from util import ppp
 from vpp_papi_provider import UnexpectedApiReturnValueError
+from vpp_ip_route import VppIpRoute, VppRoutePath
 
 USEC_IN_SEC = 1000000
 
@@ -267,8 +268,8 @@ class BFDTestSession(object):
             self.our_seq_number = our_seq_number
         self.vpp_seq_number = None
         self.my_discriminator = 0
-        self.desired_min_tx = 100000
-        self.required_min_rx = 100000
+        self.desired_min_tx = 300000
+        self.required_min_rx = 300000
         self.required_min_echo_rx = None
         self.detect_mult = detect_mult
         self.diag = BFDDiagCode.no_diagnostic
@@ -735,7 +736,7 @@ class BFD4TestCase(VppTestCase):
                 pass
         self.assert_equal(
             len(self.vapi.collect_events()), 0, "number of bfd events")
-        self.test_session.update(required_min_rx=100000)
+        self.test_session.update(required_min_rx=300000)
         for dummy in range(3):
             self.test_session.send_packet()
             wait_for_bfd_packet(
@@ -864,7 +865,8 @@ class BFD4TestCase(VppTestCase):
             required_min_rx=0.5 * self.vpp_session.required_min_rx)
         # now we wait 0.8*3*old-req-min-rx and the session should still be up
         self.sleep(0.8 * self.vpp_session.detect_mult *
-                   old_required_min_rx / USEC_IN_SEC)
+                   old_required_min_rx / USEC_IN_SEC,
+                   "wait before finishing poll sequence")
         self.assert_equal(len(self.vapi.collect_events()), 0,
                           "number of bfd events")
         p = wait_for_bfd_packet(self)
@@ -876,11 +878,12 @@ class BFD4TestCase(VppTestCase):
         final[BFD].flags = "F"
         self.test_session.send_packet(final)
         # now the session should time out under new conditions
-        before = time.time()
-        e = self.vapi.wait_for_event(1, "bfd_udp_session_details")
-        after = time.time()
         detection_time = self.test_session.detect_mult *\
             self.vpp_session.required_min_rx / USEC_IN_SEC
+        before = time.time()
+        e = self.vapi.wait_for_event(
+            2 * detection_time, "bfd_udp_session_details")
+        after = time.time()
         self.assert_in_range(after - before,
                              0.9 * detection_time,
                              1.1 * detection_time,
@@ -1090,6 +1093,9 @@ class BFD4TestCase(VppTestCase):
                     self.assertNotEqual(p[IP].src, self.loopback0.local_ip4,
                                         "BFD ECHO src IP equal to loopback IP")
                     self.logger.debug(ppp("Looping back packet:", p))
+                    self.assert_equal(p[Ether].dst, self.pg0.remote_mac,
+                                      "ECHO packet destination MAC address")
+                    p[Ether].dst = self.pg0.local_mac
                     self.pg0.add_stream(p)
                     self.pg_start()
                 elif p.haslayer(BFD):
@@ -1159,6 +1165,7 @@ class BFD4TestCase(VppTestCase):
             self.logger.debug(ppp("Got packet:", p))
             if p[UDP].dport == BFD.udp_dport_echo:
                 self.logger.debug(ppp("Looping back packet:", p))
+                p[Ether].dst = self.pg0.local_mac
                 self.pg0.add_stream(p)
                 self.pg_start()
                 break
@@ -1190,6 +1197,7 @@ class BFD4TestCase(VppTestCase):
             self.logger.debug(ppp("Got packet:", p))
             if p[UDP].dport == BFD.udp_dport_echo:
                 self.logger.debug(ppp("Looping back packet:", p))
+                p[Ether].dst = self.pg0.local_mac
                 self.pg0.add_stream(p)
                 self.pg_start()
                 break
@@ -1230,6 +1238,7 @@ class BFD4TestCase(VppTestCase):
                 else:
                     self.logger.debug(ppp("Got followup echo packet:", p))
                 self.logger.debug(ppp("Looping back first echo packet:", p))
+                echo_packet[Ether].dst = self.pg0.local_mac
                 self.pg0.add_stream(echo_packet)
                 self.pg_start()
             elif p.haslayer(BFD):
@@ -1278,6 +1287,7 @@ class BFD4TestCase(VppTestCase):
                     timeout_at = time.time() + self.vpp_session.detect_mult * \
                         self.test_session.required_min_echo_rx / USEC_IN_SEC
                 p[BFD_vpp_echo].checksum = getrandbits(64)
+                p[Ether].dst = self.pg0.local_mac
                 self.logger.debug(ppp("Looping back modified echo packet:", p))
                 self.pg0.add_stream(p)
                 self.pg_start()
@@ -1523,7 +1533,6 @@ class BFD6TestCase(VppTestCase):
         self.assert_equal(udp_sport_tx, udp_sport_rx, "UDP source port (== "
                           "ECHO packet identifier for test purposes)")
 
-    @unittest.skipUnless(running_extended_tests(), "part of extended tests")
     def test_echo(self):
         """ echo function used """
         bfd_session_up(self)
@@ -1554,6 +1563,9 @@ class BFD6TestCase(VppTestCase):
                     self.assertNotEqual(p[IPv6].src, self.loopback0.local_ip6,
                                         "BFD ECHO src IP equal to loopback IP")
                     self.logger.debug(ppp("Looping back packet:", p))
+                    self.assert_equal(p[Ether].dst, self.pg0.remote_mac,
+                                      "ECHO packet destination MAC address")
+                    p[Ether].dst = self.pg0.local_mac
                     self.pg0.add_stream(p)
                     self.pg_start()
                 elif p.haslayer(BFD):
@@ -1569,6 +1581,107 @@ class BFD6TestCase(VppTestCase):
                 self.assert_equal(len(self.vapi.collect_events()), 0,
                                   "number of bfd events")
             self.test_session.send_packet()
+
+
+class BFDFIBTestCase(VppTestCase):
+    """ BFD-FIB interactions (IPv6) """
+
+    vpp_session = None
+    test_session = None
+
+    def setUp(self):
+        super(BFDFIBTestCase, self).setUp()
+        self.create_pg_interfaces(range(1))
+
+        self.vapi.want_bfd_events()
+        self.pg0.enable_capture()
+
+        for i in self.pg_interfaces:
+            i.admin_up()
+            i.config_ip6()
+            i.configure_ipv6_neighbors()
+
+    def tearDown(self):
+        if not self.vpp_dead:
+            self.vapi.want_bfd_events(enable_disable=0)
+
+        super(BFDFIBTestCase, self).tearDown()
+
+    @staticmethod
+    def pkt_is_not_data_traffic(p):
+        """ not data traffic implies BFD or the usual IPv6 ND/RA"""
+        if p.haslayer(BFD) or is_ipv6_misc(p):
+            return True
+        return False
+
+    def test_session_with_fib(self):
+        """ BFD-FIB interactions """
+
+        # packets to match against both of the routes
+        p = [(Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
+             IPv6(src="3001::1", dst="2001::1") /
+             UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100)),
+             (Ether(dst=self.pg0.local_mac, src=self.pg0.remote_mac) /
+              IPv6(src="3001::1", dst="2002::1") /
+              UDP(sport=1234, dport=1234) /
+              Raw('\xa5' * 100))]
+
+        # A recursive and a non-recursive route via a next-hop that
+        # will have a BFD session
+        ip_2001_s_64 = VppIpRoute(self, "2001::", 64,
+                                  [VppRoutePath(self.pg0.remote_ip6,
+                                                self.pg0.sw_if_index,
+                                                is_ip6=1)],
+                                  is_ip6=1)
+        ip_2002_s_64 = VppIpRoute(self, "2002::", 64,
+                                  [VppRoutePath(self.pg0.remote_ip6,
+                                                0xffffffff,
+                                                is_ip6=1)],
+                                  is_ip6=1)
+        ip_2001_s_64.add_vpp_config()
+        ip_2002_s_64.add_vpp_config()
+
+        # bring the session up now the routes are present
+        self.vpp_session = VppBFDUDPSession(self,
+                                            self.pg0,
+                                            self.pg0.remote_ip6,
+                                            af=AF_INET6)
+        self.vpp_session.add_vpp_config()
+        self.vpp_session.admin_up()
+        self.test_session = BFDTestSession(self, self.pg0, AF_INET6)
+
+        # session is up - traffic passes
+        bfd_session_up(self)
+
+        self.pg0.add_stream(p)
+        self.pg_start()
+        for packet in p:
+            captured = self.pg0.wait_for_packet(
+                1,
+                filter_out_fn=self.pkt_is_not_data_traffic)
+            self.assertEqual(captured[IPv6].dst,
+                             packet[IPv6].dst)
+
+        # session is up - traffic is dropped
+        bfd_session_down(self)
+
+        self.pg0.add_stream(p)
+        self.pg_start()
+        with self.assertRaises(CaptureTimeoutError):
+            self.pg0.wait_for_packet(1, self.pkt_is_not_data_traffic)
+
+        # session is up - traffic passes
+        bfd_session_up(self)
+
+        self.pg0.add_stream(p)
+        self.pg_start()
+        for packet in p:
+            captured = self.pg0.wait_for_packet(
+                1,
+                filter_out_fn=self.pkt_is_not_data_traffic)
+            self.assertEqual(captured[IPv6].dst,
+                             packet[IPv6].dst)
 
 
 class BFDSHA1TestCase(VppTestCase):

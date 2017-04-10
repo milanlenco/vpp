@@ -132,6 +132,46 @@ adj_get_nd_node (fib_protocol_t proto)
     return (ip4_arp_node.index);
 }
 
+/**
+ * @brief Check and set feature flags if o/p interface has any o/p features.
+ */
+static void
+adj_nbr_evaluate_feature (adj_index_t ai)
+{
+    ip_adjacency_t *adj;
+    vnet_feature_main_t *fm = &feature_main;
+    i16 feature_count;
+    u8 arc_index;
+    u32 sw_if_index;
+
+    adj = adj_get(ai);
+
+    switch (adj->ia_link)
+    {
+    case VNET_LINK_IP4:
+        arc_index = ip4_main.lookup_main.output_feature_arc_index;
+        break;
+    case VNET_LINK_IP6:
+        arc_index = ip6_main.lookup_main.output_feature_arc_index;
+        break;
+    case VNET_LINK_MPLS:
+        arc_index = mpls_main.output_feature_arc_index;
+        break;
+    default:
+        return;
+    }
+
+    sw_if_index = adj->rewrite_header.sw_if_index;
+    if (vec_len(fm->feature_count_by_sw_if_index[arc_index]) > sw_if_index)
+    {
+        feature_count = fm->feature_count_by_sw_if_index[arc_index][sw_if_index];
+        if (feature_count > 0)
+            adj->rewrite_header.flags |= VNET_REWRITE_HAS_FEATURES;
+    }
+
+    return;
+}
+
 static ip_adjacency_t*
 adj_nbr_alloc (fib_protocol_t nh_proto,
 	       vnet_link_t link_type,
@@ -155,9 +195,8 @@ adj_nbr_alloc (fib_protocol_t nh_proto,
     adj->ia_link = link_type;
     adj->ia_nh_proto = nh_proto;
     adj->rewrite_header.sw_if_index = sw_if_index;
-    memset(&adj->sub_type.midchain.next_dpo, 0,
-           sizeof(adj->sub_type.midchain.next_dpo));
 
+    adj_nbr_evaluate_feature (adj_get_index(adj));
     return (adj);
 }
 
@@ -292,7 +331,7 @@ adj_nbr_update_rewrite (adj_index_t adj_index,
  */
 void
 adj_nbr_update_rewrite_internal (ip_adjacency_t *adj,
-				 u32 adj_next_index,
+				 ip_lookup_next_t adj_next_index,
 				 u32 this_node,
 				 u32 next_node,
 				 u8 *rewrite)
@@ -326,7 +365,7 @@ adj_nbr_update_rewrite_internal (ip_adjacency_t *adj,
     if (ADJ_INDEX_INVALID != walk_ai)
     {
         walk_adj = adj_get(walk_ai);
-        if (IP_ADJ_SYNC_WALK_ACTIVE & walk_adj->ia_flags)
+        if (ADJ_FLAG_SYNC_WALK_ACTIVE & walk_adj->ia_flags)
         {
             do_walk = 0;
         }
@@ -335,7 +374,7 @@ adj_nbr_update_rewrite_internal (ip_adjacency_t *adj,
             /*
              * Prevent re-entrant walk of the same adj
              */
-            walk_adj->ia_flags |= IP_ADJ_SYNC_WALK_ACTIVE;
+            walk_adj->ia_flags |= ADJ_FLAG_SYNC_WALK_ACTIVE;
             do_walk = 1;
         }
     }
@@ -433,7 +472,6 @@ adj_nbr_update_rewrite_internal (ip_adjacency_t *adj,
 	vnet_rewrite_clear_data_internal(&adj->rewrite_header,
 					 sizeof(adj->rewrite_data));
     }
-    adj->rewrite_header.node_index = this_node;
     adj->rewrite_header.next_index = vlib_node_add_next(vlib_get_main(),
                                                         this_node,
                                                         next_node);
@@ -462,7 +500,7 @@ adj_nbr_update_rewrite_internal (ip_adjacency_t *adj,
      */
     if (do_walk)
     {
-        walk_adj->ia_flags &= ~IP_ADJ_SYNC_WALK_ACTIVE;
+        walk_adj->ia_flags &= ~ADJ_FLAG_SYNC_WALK_ACTIVE;
     }
 
     adj_unlock(adj_get_index(adj));
@@ -971,7 +1009,6 @@ format_adj_nbr (u8* s, va_list *ap)
 {
     index_t index = va_arg(*ap, index_t);
     CLIB_UNUSED(u32 indent) = va_arg(*ap, u32);
-    vnet_main_t * vnm = vnet_get_main();
     ip_adjacency_t * adj = adj_get(index);
 
     s = format (s, "%U", format_vnet_link, adj->ia_link);
@@ -980,7 +1017,7 @@ format_adj_nbr (u8* s, va_list *ap)
 		adj_proto_to_46(adj->ia_nh_proto));
     s = format (s, "%U",
 		format_vnet_rewrite,
-		vnm->vlib_main, &adj->rewrite_header, sizeof (adj->rewrite_data), 0);
+		&adj->rewrite_header, sizeof (adj->rewrite_data), 0);
 
     return (s);
 }

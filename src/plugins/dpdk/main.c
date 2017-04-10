@@ -39,7 +39,7 @@ rte_delay_us_override (unsigned us)
    * thread then do not intercept. (Must not be called from an
    * independent pthread).
    */
-  if (os_get_cpu_number () == 0)
+  if (vlib_get_thread_index () == 0)
     {
       /*
        * We're in the vlib main thread or a vlib process. Make sure
@@ -91,5 +91,6 @@ VLIB_INIT_FUNCTION (dpdk_main_init);
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
+    .description = "Data Plane Development Kit (DPDK)",
 };
 /* *INDENT-ON* */

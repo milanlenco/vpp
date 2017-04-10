@@ -48,13 +48,16 @@
 _(L2_XCONNECT_DUMP, l2_xconnect_dump)                       \
 _(L2_FIB_CLEAR_TABLE, l2_fib_clear_table)                   \
 _(L2_FIB_TABLE_DUMP, l2_fib_table_dump)                     \
+_(L2FIB_FLUSH_INT, l2fib_flush_int)                         \
+_(L2FIB_FLUSH_BD, l2fib_flush_bd)                           \
 _(L2FIB_ADD_DEL, l2fib_add_del)                             \
 _(L2_FLAGS, l2_flags)                                       \
 _(BRIDGE_DOMAIN_ADD_DEL, bridge_domain_add_del)             \
 _(BRIDGE_DOMAIN_DUMP, bridge_domain_dump)                   \
 _(BRIDGE_FLAGS, bridge_flags)                               \
 _(L2_INTERFACE_VLAN_TAG_REWRITE, l2_interface_vlan_tag_rewrite) \
-_(L2_INTERFACE_PBB_TAG_REWRITE, l2_interface_pbb_tag_rewrite)
+_(L2_INTERFACE_PBB_TAG_REWRITE, l2_interface_pbb_tag_rewrite) \
+_(BRIDGE_DOMAIN_SET_MAC_AGE, bridge_domain_set_mac_age)
 
 static void
 send_l2_xconnect_details (unix_shared_memory_queue_t * q, u32 context,
@@ -240,21 +243,53 @@ vl_api_l2fib_add_del_t_handler (vl_api_l2fib_add_del_t * mp)
 }
 
 static void
+vl_api_l2fib_flush_int_t_handler (vl_api_l2fib_flush_int_t * mp)
+{
+  int rv = 0;
+  vlib_main_t *vm = vlib_get_main ();
+  vl_api_l2fib_flush_int_reply_t *rmp;
+
+  VALIDATE_SW_IF_INDEX (mp);
+
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  l2fib_flush_int_mac (vm, sw_if_index);
+
+  BAD_SW_IF_INDEX_LABEL;
+  REPLY_MACRO (VL_API_L2FIB_FLUSH_INT_REPLY);
+}
+
+static void
+vl_api_l2fib_flush_bd_t_handler (vl_api_l2fib_flush_bd_t * mp)
+{
+  int rv = 0;
+  vlib_main_t *vm = vlib_get_main ();
+  bd_main_t *bdm = &bd_main;
+  vl_api_l2fib_flush_bd_reply_t *rmp;
+
+  u32 bd_id = ntohl (mp->bd_id);
+  uword *p = hash_get (bdm->bd_index_by_bd_id, bd_id);
+  if (p == 0)
+    {
+      rv = VNET_API_ERROR_NO_SUCH_ENTRY;
+      goto out;
+    }
+  l2fib_flush_bd_mac (vm, *p);
+out:
+  REPLY_MACRO (VL_API_L2FIB_FLUSH_BD_REPLY);
+}
+
+static void
 vl_api_l2_flags_t_handler (vl_api_l2_flags_t * mp)
 {
   vl_api_l2_flags_reply_t *rmp;
   int rv = 0;
-  u32 sw_if_index = ntohl (mp->sw_if_index);
-  u32 flags = ntohl (mp->feature_bitmap);
   u32 rbm = 0;
 
   VALIDATE_SW_IF_INDEX (mp);
 
-#define _(a,b) \
-    if (flags & L2INPUT_FEAT_ ## a) \
-        rbm = l2input_intf_bitmap_enable (sw_if_index, L2INPUT_FEAT_ ## a, mp->is_set);
-  foreach_l2input_feat;
-#undef _
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+  u32 flags = ntohl (mp->feature_bitmap) & L2INPUT_VALID_MASK;
+  rbm = l2input_intf_bitmap_enable (sw_if_index, flags, mp->is_set);
 
   BAD_SW_IF_INDEX_LABEL;
 
@@ -264,6 +299,26 @@ vl_api_l2_flags_t_handler (vl_api_l2_flags_t * mp)
     rmp->resulting_feature_bitmap = ntohl(rbm);
   }));
   /* *INDENT-ON* */
+}
+
+static void
+vl_api_bridge_domain_set_mac_age_t_handler (vl_api_bridge_domain_set_mac_age_t
+					    * mp)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  bd_main_t *bdm = &bd_main;
+  vl_api_bridge_domain_set_mac_age_reply_t *rmp;
+  int rv = 0;
+  u32 bd_id = ntohl (mp->bd_id);
+  uword *p = hash_get (bdm->bd_index_by_bd_id, bd_id);
+  if (p == 0)
+    {
+      rv = VNET_API_ERROR_NO_SUCH_ENTRY;
+      goto out;
+    }
+  bd_set_mac_age (vm, *p, mp->mac_age);
+out:
+  REPLY_MACRO (VL_API_BRIDGE_DOMAIN_SET_MAC_AGE_REPLY);
 }
 
 static void

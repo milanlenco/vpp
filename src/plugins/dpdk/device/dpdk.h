@@ -66,6 +66,26 @@ extern vnet_device_class_t dpdk_device_class;
 extern vlib_node_registration_t dpdk_input_node;
 extern vlib_node_registration_t handoff_dispatch_node;
 
+#if RTE_VERSION >= RTE_VERSION_NUM(17, 2, 0, 0)
+#define foreach_dpdk_pmd          \
+  _ ("net_thunderx", THUNDERX)    \
+  _ ("net_e1000_em", E1000EM)     \
+  _ ("net_e1000_igb", IGB)        \
+  _ ("net_e1000_igb_vf", IGBVF)   \
+  _ ("net_ixgbe", IXGBE)          \
+  _ ("net_ixgbe_vf", IXGBEVF)     \
+  _ ("net_i40e", I40E)            \
+  _ ("net_i40e_vf", I40EVF)       \
+  _ ("net_virtio", VIRTIO)        \
+  _ ("net_enic", ENIC)            \
+  _ ("net_vmxnet3", VMXNET3)      \
+  _ ("AF_PACKET PMD", AF_PACKET)  \
+  _ ("net_bonding", BOND)         \
+  _ ("net_fm10k", FM10K)          \
+  _ ("net_cxgbe", CXGBE)          \
+  _ ("net_mlx5", MLX5)            \
+  _ ("net_dpaa2", DPAA2)
+#else
 #define foreach_dpdk_pmd          \
   _ ("net_thunderx", THUNDERX)    \
   _ ("net_e1000_em", E1000EM)     \
@@ -84,6 +104,7 @@ extern vlib_node_registration_t handoff_dispatch_node;
   _ ("net_cxgbe", CXGBE)          \
   _ ("net_mlx5", MLX5)            \
   _ ("net_dpaa2", DPAA2)
+#endif
 
 typedef enum
 {
@@ -199,8 +220,8 @@ typedef struct
   dpdk_device_hqos_per_worker_thread_t *hqos_wt;
   dpdk_device_hqos_per_hqos_thread_t *hqos_ht;
 
-  /* af_packet */
-  u8 af_packet_port_id;
+  /* af_packet or BondEthernet instance number */
+  u8 port_id;
 
   struct rte_eth_link link;
   f64 time_last_link_update;

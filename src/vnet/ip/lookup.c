@@ -73,7 +73,10 @@ ip_interface_address_add_del (ip_lookup_main_t * lm,
   a = p ? pool_elt_at_index (lm->if_address_pool, p[0]) : 0;
 
   /* Verify given length. */
-  if ((a && (address_length != a->address_length)) || (address_length == 0))
+  if ((a && (address_length != a->address_length)) ||
+      (address_length == 0) ||
+      (lm->is_ip6 && address_length > 128) ||
+      (!lm->is_ip6 && address_length > 32))
     {
       vnm->api_errno = VNET_API_ERROR_ADDRESS_LENGTH_MISMATCH;
       return clib_error_create
@@ -188,13 +191,6 @@ VNET_SW_INTERFACE_ADD_DEL_FUNCTION (ip_sw_interface_add_del);
 void
 ip_lookup_init (ip_lookup_main_t * lm, u32 is_ip6)
 {
-  /* ensure that adjacency is cacheline aligned and sized */
-  STATIC_ASSERT (STRUCT_OFFSET_OF (ip_adjacency_t, cacheline0) == 0,
-		 "Cache line marker must be 1st element in struct");
-  STATIC_ASSERT (STRUCT_OFFSET_OF (ip_adjacency_t, cacheline1) ==
-		 CLIB_CACHE_LINE_BYTES,
-		 "Data in cache line 0 is bigger than cache line size");
-
   /* Preallocate three "special" adjacencies */
   lm->adjacency_heap = adj_pool;
 
@@ -251,7 +247,8 @@ format_ip_flow_hash_config (u8 * s, va_list * args)
 u8 *
 format_ip_lookup_next (u8 * s, va_list * args)
 {
-  ip_lookup_next_t n = va_arg (*args, ip_lookup_next_t);
+  /* int promotion of ip_lookup_next_t */
+  ip_lookup_next_t n = va_arg (*args, int);
   char *t = 0;
 
   switch (n)
@@ -291,7 +288,6 @@ format_ip_lookup_next (u8 * s, va_list * args)
 u8 *
 format_ip_adjacency_packet_data (u8 * s, va_list * args)
 {
-  vnet_main_t *vnm = va_arg (*args, vnet_main_t *);
   u32 adj_index = va_arg (*args, u32);
   u8 *packet_data = va_arg (*args, u8 *);
   u32 n_packet_data_bytes = va_arg (*args, u32);
@@ -300,10 +296,9 @@ format_ip_adjacency_packet_data (u8 * s, va_list * args)
   switch (adj->lookup_next_index)
     {
     case IP_LOOKUP_NEXT_REWRITE:
-      s = format (s, "%U",
-		  format_vnet_rewrite_header,
-		  vnm->vlib_main, &adj->rewrite_header, packet_data,
-		  n_packet_data_bytes);
+    case IP_LOOKUP_NEXT_MCAST:
+      s =
+	format (s, "%U", format_hex_bytes, packet_data, n_packet_data_bytes);
       break;
 
     default:
@@ -455,6 +450,7 @@ vnet_ip_route_cmd (vlib_main_t * vm,
 			 unformat_mpls_unicast_label, &rpath.frp_local_label))
 	{
 	  rpath.frp_weight = 1;
+	  rpath.frp_eos = MPLS_NON_EOS;
 	  rpath.frp_proto = FIB_PROTOCOL_MPLS;
 	  rpath.frp_sw_if_index = ~0;
 	  vec_add1 (rpaths, rpath);
@@ -928,7 +924,7 @@ vnet_ip_mroute_cmd (vlib_main_t * vm,
 	  else if (eflags)
 	    {
 	      mfib_table_entry_update (fib_index, &pfx, MFIB_SOURCE_CLI,
-				       eflags);
+				       MFIB_RPF_ID_NONE, eflags);
 	    }
 	  else
 	    {

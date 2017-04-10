@@ -29,6 +29,7 @@
 #include <vnet/l2/feat_bitmap.h>
 #include <vnet/l2/l2_bvi.h>
 #include <vnet/l2/l2_fib.h>
+#include <vnet/l2/l2_bd.h>
 
 #include <vppinfra/error.h>
 #include <vppinfra/hash.h>
@@ -116,7 +117,7 @@ typedef enum
 static_always_inline void
 classify_and_dispatch (vlib_main_t * vm,
 		       vlib_node_runtime_t * node,
-		       u32 cpu_index,
+		       u32 thread_index,
 		       l2input_main_t * msm, vlib_buffer_t * b0, u32 * next0)
 {
   /*
@@ -201,6 +202,9 @@ classify_and_dispatch (vlib_main_t * vm,
       /* Get config for the bridge domain interface */
       bd_config = vec_elt_at_index (msm->bd_configs, bd_index0);
 
+      /* Save bridge domain seq_num */
+      vnet_buffer (b0)->l2.bd_sn = bd_config->seq_num;
+
       /*
        * Process bridge domain feature enables.
        * To perform learning/flooding/forwarding, the corresponding bit
@@ -213,6 +217,9 @@ classify_and_dispatch (vlib_main_t * vm,
 
   /* mask out features from bitmap using packet type and bd config */
   feature_bitmap = config->feature_bitmap & feat_mask;
+
+  /* Save interface seq_num */
+  vnet_buffer (b0)->l2.int_sn = config->seq_num;
 
   /* save for next feature graph nodes */
   vnet_buffer (b0)->l2.feature_bitmap = feature_bitmap;
@@ -230,7 +237,7 @@ l2input_node_inline (vlib_main_t * vm,
   u32 n_left_from, *from, *to_next;
   l2input_next_t next_index;
   l2input_main_t *msm = &l2input_main;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;	/* number of packets to process */
@@ -343,10 +350,10 @@ l2input_node_inline (vlib_main_t * vm,
 	  vlib_node_increment_counter (vm, l2input_node.index,
 				       L2INPUT_ERROR_L2INPUT, 4);
 
-	  classify_and_dispatch (vm, node, cpu_index, msm, b0, &next0);
-	  classify_and_dispatch (vm, node, cpu_index, msm, b1, &next1);
-	  classify_and_dispatch (vm, node, cpu_index, msm, b2, &next2);
-	  classify_and_dispatch (vm, node, cpu_index, msm, b3, &next3);
+	  classify_and_dispatch (vm, node, thread_index, msm, b0, &next0);
+	  classify_and_dispatch (vm, node, thread_index, msm, b1, &next1);
+	  classify_and_dispatch (vm, node, thread_index, msm, b2, &next2);
+	  classify_and_dispatch (vm, node, thread_index, msm, b3, &next3);
 
 	  /* verify speculative enqueues, maybe switch current next frame */
 	  /* if next0==next1==next_index then nothing special needs to be done */
@@ -386,7 +393,7 @@ l2input_node_inline (vlib_main_t * vm,
 	  vlib_node_increment_counter (vm, l2input_node.index,
 				       L2INPUT_ERROR_L2INPUT, 1);
 
-	  classify_and_dispatch (vm, node, cpu_index, msm, b0, &next0);
+	  classify_and_dispatch (vm, node, thread_index, msm, b0, &next0);
 
 	  /* verify speculative enqueue, maybe switch current next frame */
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
@@ -561,6 +568,12 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 						VNET_SIMULATED_ETHERNET_TX_NEXT_ETHERNET_INPUT);
 	  ASSERT (slot == VNET_SIMULATED_ETHERNET_TX_NEXT_ETHERNET_INPUT);
 	}
+
+      /* Clear MACs learned on the interface */
+      if ((config->feature_bitmap | L2INPUT_FEAT_LEARN) ||
+	  (bd_config->feature_bitmap | L2INPUT_FEAT_LEARN))
+	l2fib_flush_int_mac (vm, sw_if_index);
+
       l2_if_adjust--;
     }
   else if (config->xconnect)
@@ -632,6 +645,7 @@ set_int_l2_mode (vlib_main_t * vm, vnet_main_t * vnet_main,	/*           */
 	  config->xconnect = 0;
 	  config->bridge = 1;
 	  config->bd_index = bd_index;
+	  config->seq_num += 1;
 
 	  /*
 	   * Enable forwarding, flooding, learning and ARP termination by default

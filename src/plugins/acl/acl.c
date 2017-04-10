@@ -54,64 +54,12 @@
 
 #include "node_in.h"
 #include "node_out.h"
+#include "fa_node.h"
 
 acl_main_t acl_main;
 
-/*
- * A handy macro to set up a message reply.
- * Assumes that the following variables are available:
- * mp - pointer to request message
- * rmp - pointer to reply message type
- * rv - return value
- */
-
-#define REPLY_MACRO(t)                                          \
-do {                                                            \
-    unix_shared_memory_queue_t * q =                            \
-    vl_api_client_index_to_input_queue (mp->client_index);      \
-    if (!q)                                                     \
-        return;                                                 \
-                                                                \
-    rmp = vl_msg_api_alloc (sizeof (*rmp));                     \
-    rmp->_vl_msg_id = ntohs((t)+sm->msg_id_base);               \
-    rmp->context = mp->context;                                 \
-    rmp->retval = ntohl(rv);                                    \
-                                                                \
-    vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \
-} while(0);
-
-#define REPLY_MACRO2(t, body)                                   \
-do {                                                            \
-    unix_shared_memory_queue_t * q;                             \
-    rv = vl_msg_api_pd_handler (mp, rv);                        \
-    q = vl_api_client_index_to_input_queue (mp->client_index);  \
-    if (!q)                                                     \
-        return;                                                 \
-                                                                \
-    rmp = vl_msg_api_alloc (sizeof (*rmp));                     \
-    rmp->_vl_msg_id = ntohs((t)+am->msg_id_base);                               \
-    rmp->context = mp->context;                                 \
-    rmp->retval = ntohl(rv);                                    \
-    do {body;} while (0);                                       \
-    vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \
-} while(0);
-
-#define REPLY_MACRO3(t, n, body)                                \
-do {                                                            \
-    unix_shared_memory_queue_t * q;                             \
-    rv = vl_msg_api_pd_handler (mp, rv);                        \
-    q = vl_api_client_index_to_input_queue (mp->client_index);  \
-    if (!q)                                                     \
-        return;                                                 \
-                                                                \
-    rmp = vl_msg_api_alloc (sizeof (*rmp) + n);                 \
-    rmp->_vl_msg_id = ntohs((t)+am->msg_id_base);                               \
-    rmp->context = mp->context;                                 \
-    rmp->retval = ntohl(rv);                                    \
-    do {body;} while (0);                                       \
-    vl_msg_api_send_shmem (q, (u8 *)&rmp);                      \
-} while(0);
-
+#define REPLY_MSG_ID_BASE am->msg_id_base
+#include <vlibapi/api_helper_macros.h>
 
 /* List of message types that this plugin understands */
 
@@ -132,6 +80,7 @@ _(MACIP_ACL_INTERFACE_GET, macip_acl_interface_get)
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
+    .description = "Access Control Lists",
 };
 /* *INDENT-ON* */
 
@@ -208,10 +157,10 @@ acl_add_list (u32 count, vl_api_acl_rule_t rules[],
       r->src_prefixlen = rules[i].src_ip_prefix_len;
       r->dst_prefixlen = rules[i].dst_ip_prefix_len;
       r->proto = rules[i].proto;
-      r->src_port_or_type_first = rules[i].srcport_or_icmptype_first;
-      r->src_port_or_type_last = rules[i].srcport_or_icmptype_last;
-      r->dst_port_or_code_first = rules[i].dstport_or_icmpcode_first;
-      r->dst_port_or_code_last = rules[i].dstport_or_icmpcode_last;
+      r->src_port_or_type_first = ntohs ( rules[i].srcport_or_icmptype_first );
+      r->src_port_or_type_last = ntohs ( rules[i].srcport_or_icmptype_last );
+      r->dst_port_or_code_first = ntohs ( rules[i].dstport_or_icmpcode_first );
+      r->dst_port_or_code_last = ntohs ( rules[i].dstport_or_icmpcode_last );
       r->tcp_flags_value = rules[i].tcp_flags_value;
       r->tcp_flags_mask = rules[i].tcp_flags_mask;
     }
@@ -435,7 +384,7 @@ acl_unhook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
       am->acl_ip4_input_classify_table_by_sw_if_index[sw_if_index] = ~0;
       acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
-				  am->l2_input_classify_next_acl,
+				  am->l2_input_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
     }
   if (am->acl_ip6_input_classify_table_by_sw_if_index[sw_if_index] != ~0)
@@ -445,7 +394,7 @@ acl_unhook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
       am->acl_ip6_input_classify_table_by_sw_if_index[sw_if_index] = ~0;
       acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
-				  am->l2_input_classify_next_acl,
+				  am->l2_input_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
     }
 
@@ -473,7 +422,7 @@ acl_unhook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
       am->acl_ip4_output_classify_table_by_sw_if_index[sw_if_index] = ~0;
       acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
-				  am->l2_output_classify_next_acl,
+				  am->l2_output_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
     }
   if (am->acl_ip6_output_classify_table_by_sw_if_index[sw_if_index] != ~0)
@@ -483,7 +432,7 @@ acl_unhook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
       am->acl_ip6_output_classify_table_by_sw_if_index[sw_if_index] = ~0;
       acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
-				  am->l2_output_classify_next_acl,
+				  am->l2_output_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
     }
 
@@ -503,20 +452,20 @@ acl_hook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
   rv =
     acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				sizeof (ip4_5tuple_mask) - 1, ~0,
-				am->l2_input_classify_next_acl,
+				am->l2_input_classify_next_acl_ip4,
 				&ip4_table_index, 1);
   if (rv)
     return rv;
   rv =
     acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
 				sizeof (ip6_5tuple_mask) - 1, ~0,
-				am->l2_input_classify_next_acl,
+				am->l2_input_classify_next_acl_ip6,
 				&ip6_table_index, 1);
   if (rv)
     {
       acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
-				  am->l2_input_classify_next_acl,
+				  am->l2_input_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
       return rv;
     }
@@ -530,11 +479,11 @@ acl_hook_l2_input_classify (acl_main_t * am, u32 sw_if_index)
     {
       acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
-				  am->l2_input_classify_next_acl,
+				  am->l2_input_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
       acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
-				  am->l2_input_classify_next_acl,
+				  am->l2_input_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
       return rv;
     }
@@ -561,20 +510,20 @@ acl_hook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
   rv =
     acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				sizeof (ip4_5tuple_mask) - 1, ~0,
-				am->l2_output_classify_next_acl,
+				am->l2_output_classify_next_acl_ip4,
 				&ip4_table_index, 1);
   if (rv)
     return rv;
   rv =
     acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
 				sizeof (ip6_5tuple_mask) - 1, ~0,
-				am->l2_output_classify_next_acl,
+				am->l2_output_classify_next_acl_ip6,
 				&ip6_table_index, 1);
   if (rv)
     {
       acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
-				  am->l2_output_classify_next_acl,
+				  am->l2_output_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
       return rv;
     }
@@ -588,11 +537,11 @@ acl_hook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
     {
       acl_classify_add_del_table_big (cm, ip6_5tuple_mask,
 				  sizeof (ip6_5tuple_mask) - 1, ~0,
-				  am->l2_output_classify_next_acl,
+				  am->l2_output_classify_next_acl_ip6,
 				  &ip6_table_index, 0);
       acl_classify_add_del_table_big (cm, ip4_5tuple_mask,
 				  sizeof (ip4_5tuple_mask) - 1, ~0,
-				  am->l2_output_classify_next_acl,
+				  am->l2_output_classify_next_acl_ip4,
 				  &ip4_table_index, 0);
       return rv;
     }
@@ -607,6 +556,7 @@ acl_hook_l2_output_classify (acl_main_t * am, u32 sw_if_index)
 }
 
 
+
 int
 acl_interface_in_enable_disable (acl_main_t * am, u32 sw_if_index,
 				 int enable_disable)
@@ -617,6 +567,8 @@ acl_interface_in_enable_disable (acl_main_t * am, u32 sw_if_index,
   if (pool_is_free_index (am->vnet_main->interface_main.sw_interfaces,
 			  sw_if_index))
     return VNET_API_ERROR_INVALID_SW_IF_INDEX;
+
+  acl_fa_enable_disable(sw_if_index, 1, enable_disable);
 
   if (enable_disable)
     {
@@ -640,6 +592,8 @@ acl_interface_out_enable_disable (acl_main_t * am, u32 sw_if_index,
   if (pool_is_free_index (am->vnet_main->interface_main.sw_interfaces,
 			  sw_if_index))
     return VNET_API_ERROR_INVALID_SW_IF_INDEX;
+
+  acl_fa_enable_disable(sw_if_index, 0, enable_disable);
 
   if (enable_disable)
     {
@@ -839,8 +793,8 @@ acl_packet_match (acl_main_t * am, u32 acl_index, vlib_buffer_t * b0,
   int is_ip6;
   int is_ip4;
   u8 proto;
-  u16 src_port;
-  u16 dst_port;
+  u16 src_port = 0;
+  u16 dst_port = 0;
   u8 tcp_flags = 0;
   int i;
   acl_list_t *a;
@@ -866,15 +820,13 @@ acl_packet_match (acl_main_t * am, u32 acl_index, vlib_buffer_t * b0,
 	{
 	  *trace_bitmap |= 0x00000001;
 	  /* type */
-	  src_port = *(u8 *) get_ptr_to_offset (b0, 34);
+	  src_port = ((u16) (*(u8 *) get_ptr_to_offset (b0, 34)));
 	  /* code */
-	  dst_port = *(u8 *) get_ptr_to_offset (b0, 35);
-	}
-      else
-	{
+	  dst_port = ((u16) (*(u8 *) get_ptr_to_offset (b0, 35)));
+	} else {
 	  /* assume TCP/UDP */
-	  src_port = (*(u16 *) get_ptr_to_offset (b0, 34));
-	  dst_port = (*(u16 *) get_ptr_to_offset (b0, 36));
+	  src_port = ntohs ((u16) (*(u16 *) get_ptr_to_offset (b0, 34)));
+	  dst_port = ntohs ((u16) (*(u16 *) get_ptr_to_offset (b0, 36)));
 	  /* UDP gets ability to check on an oddball data byte as a bonus */
 	  tcp_flags = *(u8 *) get_ptr_to_offset (b0, 14 + 20 + 13);
 	}
@@ -888,15 +840,15 @@ acl_packet_match (acl_main_t * am, u32 acl_index, vlib_buffer_t * b0,
 	{
 	  *trace_bitmap |= 0x00000002;
 	  /* type */
-	  src_port = *(u8 *) get_ptr_to_offset (b0, 54);
+	  src_port = (u16) (*(u8 *) get_ptr_to_offset (b0, 54));
 	  /* code */
-	  dst_port = *(u8 *) get_ptr_to_offset (b0, 55);
+	  dst_port = (u16) (*(u8 *) get_ptr_to_offset (b0, 55));
 	}
       else
 	{
 	  /* assume TCP/UDP */
-	  src_port = (*(u16 *) get_ptr_to_offset (b0, 54));
-	  dst_port = (*(u16 *) get_ptr_to_offset (b0, 56));
+	  src_port = ntohs ((u16) (*(u16 *) get_ptr_to_offset (b0, 54)));
+	  dst_port = ntohs ((u16) (*(u16 *) get_ptr_to_offset (b0, 56)));
 	  tcp_flags = *(u8 *) get_ptr_to_offset (b0, 14 + 40 + 13);
 	}
     }
@@ -1411,7 +1363,7 @@ vl_api_acl_add_replace_t_handler (vl_api_acl_add_replace_t * mp)
 static void
 vl_api_acl_del_t_handler (vl_api_acl_del_t * mp)
 {
-  acl_main_t *sm = &acl_main;
+  acl_main_t *am = &acl_main;
   vl_api_acl_del_reply_t *rmp;
   int rv;
 
@@ -1423,8 +1375,8 @@ vl_api_acl_del_t_handler (vl_api_acl_del_t * mp)
 static void
 vl_api_acl_interface_add_del_t_handler (vl_api_acl_interface_add_del_t * mp)
 {
-  acl_main_t *sm = &acl_main;
-  vnet_interface_main_t *im = &sm->vnet_main->interface_main;
+  acl_main_t *am = &acl_main;
+  vnet_interface_main_t *im = &am->vnet_main->interface_main;
   u32 sw_if_index = ntohl (mp->sw_if_index);
   vl_api_acl_interface_add_del_reply_t *rmp;
   int rv = -1;
@@ -1443,11 +1395,11 @@ static void
 vl_api_acl_interface_set_acl_list_t_handler
   (vl_api_acl_interface_set_acl_list_t * mp)
 {
-  acl_main_t *sm = &acl_main;
+  acl_main_t *am = &acl_main;
   vl_api_acl_interface_set_acl_list_reply_t *rmp;
   int rv = 0;
   int i;
-  vnet_interface_main_t *im = &sm->vnet_main->interface_main;
+  vnet_interface_main_t *im = &am->vnet_main->interface_main;
   u32 sw_if_index = ntohl (mp->sw_if_index);
 
   if (pool_is_free_index(im->sw_interfaces, sw_if_index))
@@ -1485,10 +1437,10 @@ copy_acl_rule_to_api_rule (vl_api_acl_rule_t * api_rule, acl_rule_t * r)
   api_rule->src_ip_prefix_len = r->src_prefixlen;
   api_rule->dst_ip_prefix_len = r->dst_prefixlen;
   api_rule->proto = r->proto;
-  api_rule->srcport_or_icmptype_first = r->src_port_or_type_first;
-  api_rule->srcport_or_icmptype_last = r->src_port_or_type_last;
-  api_rule->dstport_or_icmpcode_first = r->dst_port_or_code_first;
-  api_rule->dstport_or_icmpcode_last = r->dst_port_or_code_last;
+  api_rule->srcport_or_icmptype_first = htons (r->src_port_or_type_first);
+  api_rule->srcport_or_icmptype_last = htons (r->src_port_or_type_last);
+  api_rule->dstport_or_icmpcode_first = htons (r->dst_port_or_code_first);
+  api_rule->dstport_or_icmpcode_last = htons (r->dst_port_or_code_last);
   api_rule->tcp_flags_mask = r->tcp_flags_mask;
   api_rule->tcp_flags_value = r->tcp_flags_value;
 }
@@ -1669,7 +1621,7 @@ vl_api_macip_acl_add_t_handler (vl_api_macip_acl_add_t * mp)
 static void
 vl_api_macip_acl_del_t_handler (vl_api_macip_acl_del_t * mp)
 {
-  acl_main_t *sm = &acl_main;
+  acl_main_t *am = &acl_main;
   vl_api_macip_acl_del_reply_t *rmp;
   int rv;
 
@@ -1682,10 +1634,10 @@ static void
 vl_api_macip_acl_interface_add_del_t_handler
   (vl_api_macip_acl_interface_add_del_t * mp)
 {
-  acl_main_t *sm = &acl_main;
+  acl_main_t *am = &acl_main;
   vl_api_macip_acl_interface_add_del_reply_t *rmp;
   int rv = -1;
-  vnet_interface_main_t *im = &sm->vnet_main->interface_main;
+  vnet_interface_main_t *im = &am->vnet_main->interface_main;
   u32 sw_if_index = ntohl (mp->sw_if_index);
 
   if (pool_is_free_index(im->sw_interfaces, sw_if_index))
@@ -1815,15 +1767,13 @@ vl_api_macip_acl_interface_get_t_handler (vl_api_macip_acl_interface_get_t *
   vl_msg_api_send_shmem (q, (u8 *) & rmp);
 }
 
-
-
 /* Set up the API message handling tables */
 static clib_error_t *
 acl_plugin_api_hookup (vlib_main_t * vm)
 {
-  acl_main_t *sm = &acl_main;
+  acl_main_t *am = &acl_main;
 #define _(N,n)                                                  \
-    vl_msg_api_set_handlers((VL_API_##N + sm->msg_id_base),     \
+    vl_msg_api_set_handlers((VL_API_##N + am->msg_id_base),     \
                            #n,					\
                            vl_api_##n##_t_handler,              \
                            vl_noop_handler,                     \
@@ -1841,10 +1791,10 @@ acl_plugin_api_hookup (vlib_main_t * vm)
 #undef vl_msg_name_crc_list
 
 static void
-setup_message_id_table (acl_main_t * sm, api_main_t * am)
+setup_message_id_table (acl_main_t * am, api_main_t * apim)
 {
 #define _(id,n,crc) \
-  vl_msg_api_add_msg_name_crc (am, #n "_" #crc, id + sm->msg_id_base);
+  vl_msg_api_add_msg_name_crc (apim, #n "_" #crc, id + am->msg_id_base);
   foreach_vl_msg_name_crc_acl;
 #undef _
 }
@@ -1854,11 +1804,11 @@ register_match_action_nexts (u32 next_in_ip4, u32 next_in_ip6,
 			     u32 next_out_ip4, u32 next_out_ip6)
 {
   acl_main_t *am = &acl_main;
-  u32 act = am->n_match_actions;
   if (am->n_match_actions == 255)
     {
       return ~0;
     }
+  u32 act = am->n_match_actions;
   am->n_match_actions++;
   am->acl_in_ip4_match_next[act] = next_in_ip4;
   am->acl_in_ip6_match_next[act] = next_in_ip6;
@@ -1875,10 +1825,10 @@ acl_setup_nodes (void)
   vlib_node_t *n;
 
   n = vlib_get_node_by_name (vm, (u8 *) "l2-input-classify");
-  am->l2_input_classify_next_acl =
+  am->l2_input_classify_next_acl_old =
     vlib_node_add_next_with_slot (vm, n->index, acl_in_node.index, ~0);
   n = vlib_get_node_by_name (vm, (u8 *) "l2-output-classify");
-  am->l2_output_classify_next_acl =
+  am->l2_output_classify_next_acl_old =
     vlib_node_add_next_with_slot (vm, n->index, acl_out_node.index, ~0);
 
   feat_bitmap_init_next_nodes (vm, acl_in_node.index, L2INPUT_N_FEAT,
@@ -1899,10 +1849,308 @@ acl_setup_nodes (void)
 	  sizeof (am->acl_out_ip6_match_next));
   am->n_match_actions = 0;
 
+  am->l2_input_classify_next_acl_ip4 = am->l2_input_classify_next_acl_old;
+  am->l2_input_classify_next_acl_ip6 = am->l2_input_classify_next_acl_old;
+  am->l2_output_classify_next_acl_ip4 = am->l2_output_classify_next_acl_old;
+  am->l2_output_classify_next_acl_ip6 = am->l2_output_classify_next_acl_old;
+
   register_match_action_nexts (0, 0, 0, 0);	/* drop */
   register_match_action_nexts (~0, ~0, ~0, ~0);	/* permit */
   register_match_action_nexts (ACL_IN_L2S_INPUT_IP4_ADD, ACL_IN_L2S_INPUT_IP6_ADD, ACL_OUT_L2S_OUTPUT_IP4_ADD, ACL_OUT_L2S_OUTPUT_IP6_ADD);	/* permit + create session */
 }
+
+void
+acl_setup_fa_nodes (void)
+{
+  vlib_main_t *vm = vlib_get_main ();
+  acl_main_t *am = &acl_main;
+  vlib_node_t *n, *n4, *n6;
+
+  n = vlib_get_node_by_name (vm, (u8 *) "l2-input-classify");
+  n4 = vlib_get_node_by_name (vm, (u8 *) "acl-plugin-in-ip4-l2");
+  n6 = vlib_get_node_by_name (vm, (u8 *) "acl-plugin-in-ip6-l2");
+
+
+  am->fa_l2_input_classify_next_acl_ip4 =
+    vlib_node_add_next_with_slot (vm, n->index, n4->index, ~0);
+  am->fa_l2_input_classify_next_acl_ip6 =
+    vlib_node_add_next_with_slot (vm, n->index, n6->index, ~0);
+
+  feat_bitmap_init_next_nodes (vm, n4->index, L2INPUT_N_FEAT,
+                               l2input_get_feat_names (),
+                               am->fa_acl_in_ip4_l2_node_feat_next_node_index);
+
+  feat_bitmap_init_next_nodes (vm, n6->index, L2INPUT_N_FEAT,
+                               l2input_get_feat_names (),
+                               am->fa_acl_in_ip6_l2_node_feat_next_node_index);
+
+
+  n = vlib_get_node_by_name (vm, (u8 *) "l2-output-classify");
+  n4 = vlib_get_node_by_name (vm, (u8 *) "acl-plugin-out-ip4-l2");
+  n6 = vlib_get_node_by_name (vm, (u8 *) "acl-plugin-out-ip6-l2");
+
+  am->fa_l2_output_classify_next_acl_ip4 =
+    vlib_node_add_next_with_slot (vm, n->index, n4->index, ~0);
+  am->fa_l2_output_classify_next_acl_ip6 =
+    vlib_node_add_next_with_slot (vm, n->index, n6->index, ~0);
+
+  feat_bitmap_init_next_nodes (vm, n4->index, L2OUTPUT_N_FEAT,
+                               l2output_get_feat_names (),
+                               am->fa_acl_out_ip4_l2_node_feat_next_node_index);
+
+  feat_bitmap_init_next_nodes (vm, n6->index, L2OUTPUT_N_FEAT,
+                               l2output_get_feat_names (),
+                               am->fa_acl_out_ip6_l2_node_feat_next_node_index);
+
+  am->l2_input_classify_next_acl_ip4 = am->fa_l2_input_classify_next_acl_ip4;
+  am->l2_input_classify_next_acl_ip6 = am->fa_l2_input_classify_next_acl_ip6;
+  am->l2_output_classify_next_acl_ip4 = am->fa_l2_output_classify_next_acl_ip4;
+  am->l2_output_classify_next_acl_ip6 = am->fa_l2_output_classify_next_acl_ip6;
+
+}
+
+void
+acl_set_timeout_sec(int timeout_type, u32 value)
+{
+  acl_main_t *am = &acl_main;
+  l2sess_main_t *sm = &l2sess_main;
+  clib_time_t *ct = &am->vlib_main->clib_time;
+
+  if (timeout_type < ACL_N_TIMEOUTS) {
+    am->session_timeout_sec[timeout_type] = value;
+  } else {
+    clib_warning("Unknown timeout type %d", timeout_type);
+    return;
+  }
+
+  switch(timeout_type) {
+    case ACL_TIMEOUT_UDP_IDLE:
+      sm->udp_session_idle_timeout = (u64)(((f64)value)/ct->seconds_per_clock);
+      break;
+    case ACL_TIMEOUT_TCP_IDLE:
+      sm->tcp_session_idle_timeout = (u64)(((f64)value)/ct->seconds_per_clock);
+      break;
+    case ACL_TIMEOUT_TCP_TRANSIENT:
+      sm->tcp_session_transient_timeout = (u64)(((f64)value)/ct->seconds_per_clock);
+      break;
+    default:
+      clib_warning("Unknown timeout type %d", timeout_type);
+  }
+}
+
+void
+acl_set_session_max_entries(u32 value)
+{
+  acl_main_t *am = &acl_main;
+  am->fa_conn_table_max_entries = value;
+}
+
+int
+acl_set_skip_ipv6_eh(u32 eh, u32 value)
+{
+  acl_main_t *am = &acl_main;
+  if ((eh < 256) && (value < 2))
+    {
+      am->fa_ipv6_known_eh_bitmap = clib_bitmap_set(am->fa_ipv6_known_eh_bitmap, eh, value);
+      return 1;
+    }
+  else
+    return 0;
+}
+
+
+static clib_error_t *
+acl_sw_interface_add_del (vnet_main_t * vnm, u32 sw_if_index, u32 is_add)
+{
+  acl_main_t *am = &acl_main;
+  if (0 == is_add) {
+    vlib_process_signal_event (am->vlib_main, am->fa_cleaner_node_index,
+                               ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX, sw_if_index);
+  }
+  return 0;
+}
+
+VNET_SW_INTERFACE_ADD_DEL_FUNCTION (acl_sw_interface_add_del);
+
+static clib_error_t *
+acl_set_aclplugin_fn (vlib_main_t * vm,
+                              unformat_input_t * input,
+                              vlib_cli_command_t * cmd)
+{
+  clib_error_t *error = 0;
+  u32 timeout = 0;
+  u32 val = 0;
+  u32 eh_val = 0;
+  uword memory_size = 0;
+  acl_main_t *am = &acl_main;
+
+  /* The new datapath is the default. This command exists out of precaution and for comparing the two */
+  if (unformat (input, "l2-datapath")) {
+    if (unformat(input, "old")) {
+      am->l2_input_classify_next_acl_ip4 = am->l2_input_classify_next_acl_old;
+      am->l2_input_classify_next_acl_ip6 = am->l2_input_classify_next_acl_old;
+      am->l2_output_classify_next_acl_ip4 = am->l2_output_classify_next_acl_old;
+      am->l2_output_classify_next_acl_ip6 = am->l2_output_classify_next_acl_old;
+      goto done;
+    }
+    if (unformat(input, "new")) {
+      am->l2_input_classify_next_acl_ip4 = am->fa_l2_input_classify_next_acl_ip4;
+      am->l2_input_classify_next_acl_ip6 = am->fa_l2_input_classify_next_acl_ip6;
+      am->l2_output_classify_next_acl_ip4 = am->fa_l2_output_classify_next_acl_ip4;
+      am->l2_output_classify_next_acl_ip6 = am->fa_l2_output_classify_next_acl_ip6;
+      goto done;
+    }
+    goto done;
+  }
+  if (unformat (input, "skip-ipv6-extension-header %u %u", &eh_val, &val)) {
+    if(!acl_set_skip_ipv6_eh(eh_val, val)) {
+      error = clib_error_return(0, "expecting eh=0..255, value=0..1");
+    }
+    goto done;
+  }
+  if (unformat (input, "l4-match-nonfirst-fragment %u", &val))
+    {
+      am->l4_match_nonfirst_fragment = (val != 0);
+      goto done;
+    }
+  if (unformat (input, "session")) {
+    if (unformat (input, "clear")) {
+      acl_main_t *am = &acl_main;
+      vlib_process_signal_event (am->vlib_main, am->fa_cleaner_node_index,
+                               ACL_FA_CLEANER_DELETE_BY_SW_IF_INDEX, ~0);
+	  goto done;
+    }
+    if (unformat (input, "table")) {
+      /* The commands here are for tuning/testing. No user-serviceable parts inside */
+      if (unformat (input, "max-entries")) {
+	if (!unformat(input, "%u", &val)) {
+	  error = clib_error_return(0,
+				    "expecting maximum number of entries, got `%U`",
+				    format_unformat_error, input);
+	  goto done;
+	} else {
+	  acl_set_session_max_entries(val);
+          goto done;
+	}
+      }
+      if (unformat (input, "hash-table-buckets")) {
+	if (!unformat(input, "%u", &val)) {
+	  error = clib_error_return(0,
+				    "expecting maximum number of hash table buckets, got `%U`",
+				    format_unformat_error, input);
+	  goto done;
+	} else {
+          am->fa_conn_table_hash_num_buckets = val;
+          goto done;
+	}
+      }
+      if (unformat (input, "hash-table-memory")) {
+	if (!unformat(input, "%U", unformat_memory_size, &memory_size)) {
+	  error = clib_error_return(0,
+				    "expecting maximum amount of hash table memory, got `%U`",
+				    format_unformat_error, input);
+	  goto done;
+	} else {
+          am->fa_conn_table_hash_memory_size = memory_size;
+          goto done;
+	}
+      }
+      goto done;
+    }
+    if (unformat (input, "timeout")) {
+      if (unformat(input, "udp")) {
+	if(unformat(input, "idle")) {
+	  if (!unformat(input, "%u", &timeout)) {
+	    error = clib_error_return(0,
+				      "expecting timeout value in seconds, got `%U`",
+				      format_unformat_error, input);
+	    goto done;
+	  } else {
+	    acl_set_timeout_sec(ACL_TIMEOUT_UDP_IDLE, timeout);
+            goto done;
+	  }
+	}
+      }
+      if (unformat(input, "tcp")) {
+	if(unformat(input, "idle")) {
+	  if (!unformat(input, "%u", &timeout)) {
+	    error = clib_error_return(0,
+				      "expecting timeout value in seconds, got `%U`",
+				      format_unformat_error, input);
+	    goto done;
+	  } else {
+	    acl_set_timeout_sec(ACL_TIMEOUT_TCP_IDLE, timeout);
+            goto done;
+	  }
+	}
+	if(unformat(input, "transient")) {
+	  if (!unformat(input, "%u", &timeout)) {
+	    error = clib_error_return(0,
+				      "expecting timeout value in seconds, got `%U`",
+				      format_unformat_error, input);
+	    goto done;
+	  } else {
+	    acl_set_timeout_sec(ACL_TIMEOUT_TCP_TRANSIENT, timeout);
+            goto done;
+	  }
+	}
+      }
+      goto done;
+    }
+  }
+done:
+  return error;
+}
+
+static clib_error_t *
+acl_show_aclplugin_fn (vlib_main_t * vm,
+                              unformat_input_t * input,
+                              vlib_cli_command_t * cmd)
+{
+  clib_error_t *error = 0;
+  acl_main_t *am = &acl_main;
+  vnet_interface_main_t *im = &am->vnet_main->interface_main;
+
+  vnet_sw_interface_t *swif;
+
+  if (unformat (input, "sessions"))
+    {
+      u8 * out0 = 0;
+      pool_foreach (swif, im->sw_interfaces,
+      ({
+        u32 sw_if_index =  swif->sw_if_index;
+        u64 n_adds = sw_if_index < vec_len(am->fa_session_adds_by_sw_if_index) ? am->fa_session_adds_by_sw_if_index[sw_if_index] : 0;
+        u64 n_dels = sw_if_index < vec_len(am->fa_session_dels_by_sw_if_index) ? am->fa_session_dels_by_sw_if_index[sw_if_index] : 0;
+        out0 = format(out0, "sw_if_index %d: add %lu - del %lu = %lu\n", sw_if_index, n_adds, n_dels, n_adds - n_dels);
+      }));
+      out0 = format(out0, "\n\nConn cleaner thread counters:\n");
+#define _(cnt, desc) out0 = format(out0, "             %20lu: %s\n", am->cnt, desc);
+      foreach_fa_cleaner_counter;
+#undef _
+      vlib_cli_output(vm, "\n\n%s\n\n", out0);
+      vlib_cli_output(vm, "Sessions per interval: min %lu max %lu increment: %f ms current: %f ms",
+              am->fa_min_deleted_sessions_per_interval, am->fa_max_deleted_sessions_per_interval,
+              am->fa_cleaner_wait_time_increment * 1000.0, ((f64)am->fa_current_cleaner_timer_wait_interval) * 1000.0/(f64)vm->clib_time.clocks_per_second);
+
+      vec_free(out0);
+    }
+  return error;
+}
+
+
+ /* *INDENT-OFF* */
+VLIB_CLI_COMMAND (aclplugin_set_command, static) = {
+    .path = "set acl-plugin",
+    .short_help = "set acl-plugin session timeout {{udp idle}|tcp {idle|transient}} <seconds>",
+    .function = acl_set_aclplugin_fn,
+};
+
+VLIB_CLI_COMMAND (aclplugin_show_command, static) = {
+    .path = "show acl-plugin",
+    .short_help = "show acl-plugin sessions",
+    .function = acl_show_aclplugin_fn,
+};
+/* *INDENT-ON* */
 
 
 
@@ -1928,6 +2176,41 @@ acl_init (vlib_main_t * vm)
   setup_message_id_table (am, &api_main);
 
   vec_free (name);
+
+  acl_setup_fa_nodes();
+  am->session_timeout_sec[ACL_TIMEOUT_TCP_TRANSIENT] = TCP_SESSION_TRANSIENT_TIMEOUT_SEC;
+  am->session_timeout_sec[ACL_TIMEOUT_TCP_IDLE] = TCP_SESSION_IDLE_TIMEOUT_SEC;
+  am->session_timeout_sec[ACL_TIMEOUT_UDP_IDLE] = UDP_SESSION_IDLE_TIMEOUT_SEC;
+
+  am->fa_conn_table_hash_num_buckets = ACL_FA_CONN_TABLE_DEFAULT_HASH_NUM_BUCKETS;
+  am->fa_conn_table_hash_memory_size = ACL_FA_CONN_TABLE_DEFAULT_HASH_MEMORY_SIZE;
+  am->fa_conn_table_max_entries = ACL_FA_CONN_TABLE_DEFAULT_MAX_ENTRIES;
+
+  {
+    u8 tt;
+    for(tt = 0; tt < ACL_N_TIMEOUTS; tt++) {
+       am->fa_conn_list_head[tt] = ~0;
+       am->fa_conn_list_tail[tt] = ~0;
+    }
+  }
+
+  am->fa_min_deleted_sessions_per_interval = ACL_FA_DEFAULT_MIN_DELETED_SESSIONS_PER_INTERVAL;
+  am->fa_max_deleted_sessions_per_interval = ACL_FA_DEFAULT_MAX_DELETED_SESSIONS_PER_INTERVAL;
+  am->fa_cleaner_wait_time_increment = ACL_FA_DEFAULT_CLEANER_WAIT_TIME_INCREMENT;
+
+  am->fa_cleaner_cnt_delete_by_sw_index = 0;
+  am->fa_cleaner_cnt_delete_by_sw_index_ok = 0;
+  am->fa_cleaner_cnt_unknown_event = 0;
+  am->fa_cleaner_cnt_deleted_sessions = 0;
+  am->fa_cleaner_cnt_timer_restarted = 0;
+  am->fa_cleaner_cnt_wait_with_timeout = 0;
+
+
+#define _(N, v, s) am->fa_ipv6_known_eh_bitmap = clib_bitmap_set(am->fa_ipv6_known_eh_bitmap, v, 1);
+  foreach_acl_eh
+#undef _
+
+  am->l4_match_nonfirst_fragment = 1;
 
   return error;
 }

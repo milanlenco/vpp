@@ -60,7 +60,7 @@ ip4_cop_whitelist_node_fn (vlib_main_t * vm,
   cop_feature_type_t next_index;
   cop_main_t *cm = &cop_main;
   vlib_combined_counter_main_t * vcm = &load_balance_main.lbm_via_counters;
-  u32 cpu_index = vm->cpu_index;
+  u32 thread_index = vm->thread_index;
 
   from = vlib_frame_vector_args (frame);
   n_left_from = frame->n_vectors;
@@ -125,13 +125,7 @@ ip4_cop_whitelist_node_fn (vlib_main_t * vm,
 
 	  mtrie0 = &ip4_fib_get (c0->fib_index)->mtrie;
 
-      	  leaf0 = IP4_FIB_MTRIE_LEAF_ROOT;
-
-      	  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0,
-                                             &ip0->src_address, 0);
-
-      	  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0,
-                                             &ip0->src_address, 1);
+          leaf0 = ip4_fib_mtrie_lookup_step_one (mtrie0, &ip0->src_address);
 
       	  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0,
                                              &ip0->src_address, 2);
@@ -167,13 +161,7 @@ ip4_cop_whitelist_node_fn (vlib_main_t * vm,
                sizeof (c1[0]));
 	  mtrie1 = &ip4_fib_get (c1->fib_index)->mtrie;
 
-      	  leaf1 = IP4_FIB_MTRIE_LEAF_ROOT;
-
-      	  leaf1 = ip4_fib_mtrie_lookup_step (mtrie1, leaf1,
-                                             &ip1->src_address, 0);
-
-      	  leaf1 = ip4_fib_mtrie_lookup_step (mtrie1, leaf1,
-                                             &ip1->src_address, 1);
+          leaf1 = ip4_fib_mtrie_lookup_step_one (mtrie1, &ip1->src_address);
 
       	  leaf1 = ip4_fib_mtrie_lookup_step (mtrie1, leaf1,
                                              &ip1->src_address, 2);
@@ -189,12 +177,12 @@ ip4_cop_whitelist_node_fn (vlib_main_t * vm,
           dpo1 = load_balance_get_bucket_i(lb1, 0);
 
           vlib_increment_combined_counter
-              (vcm, cpu_index, lb_index0, 1,
+              (vcm, thread_index, lb_index0, 1,
                vlib_buffer_length_in_chain (vm, b0)
                + sizeof(ethernet_header_t));
 
           vlib_increment_combined_counter
-              (vcm, cpu_index, lb_index1, 1,
+              (vcm, thread_index, lb_index1, 1,
                vlib_buffer_length_in_chain (vm, b1)
                + sizeof(ethernet_header_t));
 
@@ -267,13 +255,7 @@ ip4_cop_whitelist_node_fn (vlib_main_t * vm,
 
 	  mtrie0 = &ip4_fib_get (c0->fib_index)->mtrie;
 
-	  leaf0 = IP4_FIB_MTRIE_LEAF_ROOT;
-
-	  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, 
-                                             &ip0->src_address, 0);
-
-	  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, 
-                                             &ip0->src_address, 1);
+          leaf0 = ip4_fib_mtrie_lookup_step_one (mtrie0, &ip0->src_address);
 
 	  leaf0 = ip4_fib_mtrie_lookup_step (mtrie0, leaf0, 
                                              &ip0->src_address, 2);
@@ -291,7 +273,7 @@ ip4_cop_whitelist_node_fn (vlib_main_t * vm,
           dpo0 = load_balance_get_bucket_i(lb0, 0);
 
           vlib_increment_combined_counter 
-              (vcm, cpu_index, lb_index0, 1,
+              (vcm, thread_index, lb_index0, 1,
                vlib_buffer_length_in_chain (vm, b0) 
                + sizeof(ethernet_header_t));
 

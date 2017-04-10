@@ -53,6 +53,9 @@ typedef struct
   /* split horizon group */
   u8 shg;
 
+  /* sequence number for interface based flush of MACs */
+  u8 seq_num;
+
 } l2_input_config_t;
 
 
@@ -114,6 +117,11 @@ typedef enum
   foreach_l2input_feat
 #undef _
     L2INPUT_N_FEAT,
+  L2INPUT_VALID_MASK =
+#define _(sym,str) L2INPUT_FEAT_##sym##_BIT |
+    foreach_l2input_feat
+#undef _
+    0,
 } l2input_feat_t;
 
 /* Feature bit masks */

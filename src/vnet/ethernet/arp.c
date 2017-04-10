@@ -479,33 +479,35 @@ arp_update_adjacency (vnet_main_t * vnm, u32 sw_if_index, u32 ai)
 	}
       break;
     case IP_LOOKUP_NEXT_MCAST:
-      /*
-       * Construct a partial rewrite from the known ethernet mcast dest MAC
-       */
-      adj_mcast_update_rewrite
-	(ai,
-	 ethernet_build_rewrite (vnm,
-				 sw_if_index,
-				 adj->ia_link,
-				 ethernet_ip4_mcast_dst_addr ()));
+      {
+	/*
+	 * Construct a partial rewrite from the known ethernet mcast dest MAC
+	 */
+	u8 *rewrite;
+	u8 offset;
 
-      /*
-       * Complete the remaining fields of the adj's rewrite to direct the
-       * complete of the rewrite at switch time by copying in the IP
-       * dst address's bytes.
-       * Ofset is 11 bytes from the end of the MAC header - which is three
-       * bytes into the desintation address. And we write 3 bytes.
-       */
-      adj->rewrite_header.dst_mcast_offset = 11;
-      adj->rewrite_header.dst_mcast_n_bytes = 3;
+	rewrite = ethernet_build_rewrite (vnm,
+					  sw_if_index,
+					  adj->ia_link,
+					  ethernet_ip4_mcast_dst_addr ());
+	offset = vec_len (rewrite) - 2;
 
-      break;
+	/*
+	 * Complete the remaining fields of the adj's rewrite to direct the
+	 * complete of the rewrite at switch time by copying in the IP
+	 * dst address's bytes.
+	 * Ofset is 2 bytes into the MAC desintation address. And we copy 23 bits
+	 * from the address.
+	 */
+	adj_mcast_update_rewrite (ai, rewrite, offset, 0x007fffff);
 
+	break;
+      }
     case IP_LOOKUP_NEXT_DROP:
     case IP_LOOKUP_NEXT_PUNT:
     case IP_LOOKUP_NEXT_LOCAL:
     case IP_LOOKUP_NEXT_REWRITE:
-    case IP_LOOKUP_NEXT_LOAD_BALANCE:
+    case IP_LOOKUP_NEXT_MCAST_MIDCHAIN:
     case IP_LOOKUP_NEXT_MIDCHAIN:
     case IP_LOOKUP_NEXT_ICMP_ERROR:
     case IP_LOOKUP_N_NEXT:
@@ -700,76 +702,59 @@ vnet_add_del_ip4_arp_change_event (vnet_main_t * vnm,
 {
   ethernet_arp_main_t *am = &ethernet_arp_main;
   ip4_address_t *address = address_arg;
-  uword *p;
-  pending_resolution_t *mc;
-  void (*fp) (u32, u8 *) = data_callback;
 
+  /* Try to find an existing entry */
+  u32 *first = (u32 *) hash_get (am->mac_changes_by_address, address->as_u32);
+  u32 *p = first;
+  pending_resolution_t *mc;
+  while (p && *p != ~0)
+    {
+      mc = pool_elt_at_index (am->mac_changes, *p);
+      if (mc->node_index == node_index && mc->type_opaque == type_opaque
+	  && mc->pid == pid)
+	break;
+      p = &mc->next_index;
+    }
+
+  int found = p && *p != ~0;
   if (is_add)
     {
+      if (found)
+	return VNET_API_ERROR_ENTRY_ALREADY_EXISTS;
+
       pool_get (am->mac_changes, mc);
+      *mc = (pending_resolution_t)
+      {
+      .next_index = ~0,.node_index = node_index,.type_opaque =
+	  type_opaque,.data = data,.data_callback = data_callback,.pid =
+	  pid,};
 
-      mc->next_index = ~0;
-      mc->node_index = node_index;
-      mc->type_opaque = type_opaque;
-      mc->data = data;
-      mc->data_callback = data_callback;
-      mc->pid = pid;
-
-      p = hash_get (am->mac_changes_by_address, address->as_u32);
+      /* Insert new resolution at the end of the list */
+      u32 new_idx = mc - am->mac_changes;
       if (p)
-	{
-	  /* Insert new resolution at the head of the list */
-	  mc->next_index = p[0];
-	  hash_unset (am->mac_changes_by_address, address->as_u32);
-	}
-
-      hash_set (am->mac_changes_by_address, address->as_u32,
-		mc - am->mac_changes);
-      return 0;
+	p[0] = new_idx;
+      else
+	hash_set (am->mac_changes_by_address, address->as_u32, new_idx);
     }
   else
     {
-      u32 index;
-      pending_resolution_t *mc_last = 0;
-
-      p = hash_get (am->mac_changes_by_address, address->as_u32);
-      if (p == 0)
+      if (!found)
 	return VNET_API_ERROR_NO_SUCH_ENTRY;
 
-      index = p[0];
+      /* Clients may need to clean up pool entries, too */
+      void (*fp) (u32, u8 *) = data_callback;
+      if (fp)
+	(*fp) (mc->data, 0 /* no new mac addrs */ );
 
-      while (index != (u32) ~ 0)
-	{
-	  mc = pool_elt_at_index (am->mac_changes, index);
-	  if (mc->node_index == node_index &&
-	      mc->type_opaque == type_opaque && mc->pid == pid)
-	    {
-	      /* Clients may need to clean up pool entries, too */
-	      if (fp)
-		(*fp) (mc->data, 0 /* no new mac addrs */ );
-	      if (index == p[0])
-		{
-		  hash_unset (am->mac_changes_by_address, address->as_u32);
-		  if (mc->next_index != ~0)
-		    hash_set (am->mac_changes_by_address, address->as_u32,
-			      mc->next_index);
-		  pool_put (am->mac_changes, mc);
-		  return 0;
-		}
-	      else
-		{
-		  ASSERT (mc_last);
-		  mc_last->next_index = mc->next_index;
-		  pool_put (am->mac_changes, mc);
-		  return 0;
-		}
-	    }
-	  mc_last = mc;
-	  index = mc->next_index;
-	}
+      /* Remove the entry from the list and delete the entry */
+      *p = mc->next_index;
+      pool_put (am->mac_changes, mc);
 
-      return VNET_API_ERROR_NO_SUCH_ENTRY;
+      /* Remove from hash if we deleted the last entry */
+      if (*p == ~0 && p == first)
+	hash_unset (am->mac_changes_by_address, address->as_u32);
     }
+  return 0;
 }
 
 /* Either we drop the packet or we send a reply to the sender. */
@@ -1016,7 +1001,6 @@ arp_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	  vnet_hw_interface_t *hw_if0;
 	  ethernet_arp_header_t *arp0;
 	  ethernet_header_t *eth0;
-	  ip_adjacency_t *adj0;
 	  ip4_address_t *if_addr0, proxy_src;
 	  u32 pi0, error0, next0, sw_if_index0, conn_sw_if_index0, fib_index0;
 	  u8 is_request0, dst_is_local0, is_unnum0;
@@ -1073,6 +1057,11 @@ arp_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 					  32);
 	  dst_flags = fib_entry_get_flags (dst_fei);
 
+	  src_fei = ip4_fib_table_lookup (ip4_fib_get (fib_index0),
+					  &arp0->ip4_over_ethernet[0].ip4,
+					  32);
+	  src_flags = fib_entry_get_flags (src_fei);
+
 	  conn_sw_if_index0 = fib_entry_get_resolving_interface (dst_fei);
 
 	  if (!(FIB_ENTRY_FLAG_CONNECTED & dst_flags))
@@ -1085,11 +1074,6 @@ arp_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	  is_unnum0 = sw_if_index0 != conn_sw_if_index0;
 
 	  /* Source must also be local to subnet of matching interface address. */
-	  src_fei = ip4_fib_table_lookup (ip4_fib_get (fib_index0),
-					  &arp0->ip4_over_ethernet[0].ip4,
-					  32);
-	  src_flags = fib_entry_get_flags (src_fei);
-
 	  if (!((FIB_ENTRY_FLAG_ATTACHED & src_flags) ||
 		(FIB_ENTRY_FLAG_CONNECTED & src_flags)))
 	    {
@@ -1187,25 +1171,62 @@ arp_input (vlib_main_t * vm, vlib_node_runtime_t * node, vlib_frame_t * frame)
 	  /* get the adj from the destination's covering connected */
 	  if (NULL == pa)
 	    {
-	      adj0 =
-		adj_get (fib_entry_get_adj_for_source
-			 (ip4_fib_table_lookup
-			  (ip4_fib_get (fib_index0),
-			   &arp0->ip4_over_ethernet[1].ip4, 31),
-			  FIB_SOURCE_INTERFACE));
-	      if (adj0->lookup_next_index != IP_LOOKUP_NEXT_GLEAN)
-		{
-		  error0 = ETHERNET_ARP_ERROR_missing_interface_address;
-		  goto drop2;
-		}
 	      if (is_unnum0)
 		{
 		  if (!arp_unnumbered (p0, pi0, eth0, conn_sw_if_index0))
 		    goto drop2;
 		}
 	      else
-		vlib_buffer_advance (p0, -adj0->rewrite_header.data_bytes);
+		{
+		  ip_adjacency_t *adj0 = NULL;
+		  adj_index_t ai;
+
+		  if (FIB_ENTRY_FLAG_ATTACHED & src_flags)
+		    {
+		      /*
+		       * If the source is attached use the adj from that source.
+		       */
+		      ai = fib_entry_get_adj (src_fei);
+		      if (ADJ_INDEX_INVALID != ai)
+			{
+			  adj0 = adj_get (ai);
+			}
+		    }
+		  else
+		    {
+		      /*
+		       * Get the glean adj from the cover. This is presumably interface
+		       * sourced, and therefre needs to be a glean adj.
+		       */
+		      ai = fib_entry_get_adj_for_source
+			(ip4_fib_table_lookup
+			 (ip4_fib_get (fib_index0),
+			  &arp0->ip4_over_ethernet[1].ip4, 31),
+			 FIB_SOURCE_INTERFACE);
+
+		      if (ADJ_INDEX_INVALID != ai)
+			{
+			  adj0 = adj_get (ai);
+
+			  if (adj0->lookup_next_index == IP_LOOKUP_NEXT_GLEAN)
+			    {
+			      adj0 = NULL;
+			    }
+			}
+		    }
+		  if (NULL != adj0)
+		    {
+		      vlib_buffer_advance (p0,
+					   -adj0->rewrite_header.data_bytes);
+		    }
+		  else
+		    {
+		      error0 = ETHERNET_ARP_ERROR_missing_interface_address;
+		      goto drop2;
+		    }
+		}
 	    }
+
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, pi0, next0);
 
@@ -1751,7 +1772,7 @@ set_ip4_over_ethernet_rpc_callback (vnet_arp_set_ip4_over_ethernet_rpc_args_t
 				    * a)
 {
   vnet_main_t *vm = vnet_get_main ();
-  ASSERT (os_get_cpu_number () == 0);
+  ASSERT (vlib_get_thread_index () == 0);
 
   if (a->flags & ETHERNET_ARP_ARGS_REMOVE)
     vnet_arp_unset_ip4_over_ethernet_internal (vm, a);
@@ -2184,6 +2205,10 @@ arp_term_l2bd (vlib_main_t * vm,
 	  n_left_to_next -= 1;
 
 	  p0 = vlib_get_buffer (vm, pi0);
+	  // Terminate only local (SHG == 0) ARP
+	  if (vnet_buffer (p0)->l2.shg != 0)
+	    goto next_l2_feature;
+
 	  eth0 = vlib_buffer_get_current (p0);
 	  l3h0 = (u8 *) eth0 + vnet_buffer (p0)->l2.l2_len;
 	  ethertype0 = clib_net_to_host_u16 (*(u16 *) (l3h0 - 2));
@@ -2235,8 +2260,8 @@ arp_term_l2bd (vlib_main_t * vm,
 	    pending_resolution_t *mc;
 	    ethernet_arp_main_t *am = &ethernet_arp_main;
 	    uword *p = hash_get (am->mac_changes_by_address, 0);
-	    if (p && (vnet_buffer (p0)->l2.shg == 0))
-	      {			// Only SHG 0 interface which is more likely local
+	    if (p)
+	      {
 		u32 next_index = p[0];
 		while (next_index != (u32) ~ 0)
 		  {
@@ -2297,11 +2322,6 @@ arp_term_l2bd (vlib_main_t * vm,
 	  /* Send ARP/ND reply back out input interface through l2-output */
 	  vnet_buffer (p0)->sw_if_index[VLIB_TX] = sw_if_index0;
 	  next0 = ARP_TERM_NEXT_L2_OUTPUT;
-	  /* Note that output to VXLAN tunnel will fail due to SHG which
-	     is probably desireable since ARP termination is not intended
-	     for ARP requests from other hosts. If output to VXLAN tunnel is
-	     required, however, can just clear the SHG in packet as follows:
-	     vnet_buffer(p0)->l2.shg = 0;         */
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
 					   to_next, n_left_to_next, pi0,
 					   next0);
@@ -2319,7 +2339,7 @@ arp_term_l2bd (vlib_main_t * vm,
 	      sw_if_index0 = vnet_buffer (p0)->sw_if_index[VLIB_RX];
 	      if (vnet_ip6_nd_term
 		  (vm, node, p0, eth0, iph0, sw_if_index0,
-		   vnet_buffer (p0)->l2.bd_index, vnet_buffer (p0)->l2.shg))
+		   vnet_buffer (p0)->l2.bd_index))
 		goto output_response;
 	    }
 

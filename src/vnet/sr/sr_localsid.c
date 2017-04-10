@@ -72,18 +72,16 @@ sr_cli_localsid (char is_del, ip6_address_t * localsid_addr,
   int rv;
 
   ip6_sr_localsid_t *ls = 0;
-  ip6_address_t *key_copy;
 
   dpo_id_t dpo = DPO_INVALID;
 
   /* Search for the item */
-  p = hash_get_mem (sm->localsids_index_by_key, localsid_addr);
+  p = mhash_get (&sm->sr_localsids_index_hash, localsid_addr);
 
   if (p)
     {
       if (is_del)
 	{
-	  hash_pair_t *hp;
 	  /* Retrieve localsid */
 	  ls = pool_elt_at_index (sm->localsids, p[0]);
 	  /* Delete FIB entry */
@@ -116,10 +114,7 @@ sr_cli_localsid (char is_del, ip6_address_t * localsid_addr,
 
 	  /* Delete localsid registry */
 	  pool_put (sm->localsids, ls);
-	  hp = hash_get_pair (sm->localsids_index_by_key, localsid_addr);
-	  key_copy = (void *) (hp->key);
-	  hash_unset_mem (sm->localsids_index_by_key, localsid_addr);
-	  vec_free (key_copy);
+	  mhash_unset (&sm->sr_localsids_index_hash, localsid_addr, NULL);
 	  return 1;
 	}
       else			/* create with function already existing; complain */
@@ -232,9 +227,8 @@ sr_cli_localsid (char is_del, ip6_address_t * localsid_addr,
     }
 
   /* Set hash key for searching localsid by address */
-  key_copy = vec_new (ip6_address_t, 1);
-  clib_memcpy (key_copy, localsid_addr, sizeof (ip6_address_t));
-  hash_set_mem (sm->localsids_index_by_key, key_copy, ls - sm->localsids);
+  mhash_set (&sm->sr_localsids_index_hash, localsid_addr, ls - sm->localsids,
+	     NULL);
 
   fib_table_entry_special_dpo_add (fib_index, &pfx, FIB_SOURCE_SR,
 				   FIB_ENTRY_FLAG_EXCLUSIVE, &dpo);
@@ -827,6 +821,9 @@ end_psp_srh_processing (vlib_node_runtime_t * node,
 			ip6_sr_localsid_t * ls0, u32 * next0)
 {
   u32 new_l0, sr_len;
+  u64 *copy_dst0, *copy_src0;
+  u32 copy_len_u64s0 = 0;
+  int i;
 
   if (PREDICT_TRUE (sr0->type == ROUTING_HEADER_TYPE_SR))
     {
@@ -845,8 +842,25 @@ end_psp_srh_processing (vlib_node_runtime_t * node,
 	  vlib_buffer_advance (b0, sr_len);
 	  new_l0 = clib_net_to_host_u16 (ip0->payload_length) - sr_len;
 	  ip0->payload_length = clib_host_to_net_u16 (new_l0);
-	  clib_memcpy ((void *) ip0 + sr_len, ip0,
-		       (void *) sr0 - (void *) ip0);
+	  copy_src0 = (u64 *) ip0;
+	  copy_dst0 = copy_src0 + (sr0->length + 1);
+	  /* number of 8 octet units to copy
+	   * By default in absence of extension headers it is equal to length of ip6 header
+	   * With extension headers it number of 8 octet units of ext headers preceding
+	   * SR header
+	   */
+	  copy_len_u64s0 =
+	    (((u8 *) sr0 - (u8 *) ip0) - sizeof (ip6_header_t)) >> 3;
+	  copy_dst0[4 + copy_len_u64s0] = copy_src0[4 + copy_len_u64s0];
+	  copy_dst0[3 + copy_len_u64s0] = copy_src0[3 + copy_len_u64s0];
+	  copy_dst0[2 + copy_len_u64s0] = copy_src0[2 + copy_len_u64s0];
+	  copy_dst0[1 + copy_len_u64s0] = copy_src0[1 + copy_len_u64s0];
+	  copy_dst0[0 + copy_len_u64s0] = copy_src0[0 + copy_len_u64s0];
+
+	  for (i = copy_len_u64s0 - 1; i >= 0; i--)
+	    {
+	      copy_dst0[i] = copy_src0[i];
+	    }
 
 	  if (ls0->behavior == SR_BEHAVIOR_X)
 	    {
@@ -873,7 +887,7 @@ sr_localsid_d_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
   next_index = node->cached_next_index;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
 
   while (n_left_from > 0)
     {
@@ -960,26 +974,26 @@ sr_localsid_d_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_increment_combined_counter
 	    (((next0 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls0 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b0));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls0 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b0));
 
 	  vlib_increment_combined_counter
 	    (((next1 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls1 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b1));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls1 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b1));
 
 	  vlib_increment_combined_counter
 	    (((next2 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls2 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b2));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls2 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b2));
 
 	  vlib_increment_combined_counter
 	    (((next3 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls3 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b3));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls3 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b3));
 
 	  vlib_validate_buffer_enqueue_x4 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, bi1, bi2, bi3,
@@ -1048,8 +1062,8 @@ sr_localsid_d_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_increment_combined_counter
 	    (((next0 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls0 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b0));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls0 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b0));
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, next0);
@@ -1089,7 +1103,7 @@ sr_localsid_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
   next_index = node->cached_next_index;
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
 
   while (n_left_from > 0)
     {
@@ -1191,26 +1205,26 @@ sr_localsid_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_increment_combined_counter
 	    (((next0 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls0 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b0));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls0 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b0));
 
 	  vlib_increment_combined_counter
 	    (((next1 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls1 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b1));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls1 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b1));
 
 	  vlib_increment_combined_counter
 	    (((next2 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls2 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b2));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls2 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b2));
 
 	  vlib_increment_combined_counter
 	    (((next3 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls3 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b3));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls3 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b3));
 
 	  vlib_validate_buffer_enqueue_x4 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, bi1, bi2, bi3,
@@ -1281,8 +1295,8 @@ sr_localsid_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	  vlib_increment_combined_counter
 	    (((next0 ==
 	       SR_LOCALSID_NEXT_ERROR) ? &(sm->sr_ls_invalid_counters) :
-	      &(sm->sr_ls_valid_counters)), cpu_index, ls0 - sm->localsids, 1,
-	     vlib_buffer_length_in_chain (vm, b0));
+	      &(sm->sr_ls_valid_counters)), thread_index, ls0 - sm->localsids,
+	     1, vlib_buffer_length_in_chain (vm, b0));
 
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index, to_next,
 					   n_left_to_next, bi0, next0);
@@ -1456,8 +1470,8 @@ sr_localsids_init (vlib_main_t * vm)
 {
   /* Init memory for function keys */
   ip6_sr_main_t *sm = &sr_main;
-  sm->localsids_index_by_key =
-    hash_create_mem (0, sizeof (ip6_address_t), sizeof (uword));
+  mhash_init (&sm->sr_localsids_index_hash, sizeof (uword),
+	      sizeof (ip6_address_t));
   /* Init SR behaviors DPO type */
   sr_localsid_dpo_type = dpo_register_new_type (&sr_loc_vft, sr_loc_nodes);
   /* Init SR behaviors DPO type */

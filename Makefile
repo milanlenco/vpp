@@ -32,14 +32,15 @@ endif
 
 ifeq ($(filter ubuntu debian,$(OS_ID)),$(OS_ID))
 PKG=deb
-else ifeq ($(filter rhel centos,$(OS_ID)),$(OS_ID))
+else ifeq ($(filter rhel centos fedora,$(OS_ID)),$(OS_ID))
 PKG=rpm
 endif
 
 DEB_DEPENDS  = curl build-essential autoconf automake bison libssl-dev ccache
 DEB_DEPENDS += debhelper dkms git libtool libganglia1-dev libapr1-dev dh-systemd
 DEB_DEPENDS += libconfuse-dev git-review exuberant-ctags cscope pkg-config
-DEB_DEPENDS += python-dev python-virtualenv python-pip lcov chrpath autoconf nasm
+DEB_DEPENDS += lcov chrpath autoconf nasm
+DEB_DEPENDS += python-all python-dev python-virtualenv python-pip libffi6
 ifeq ($(OS_VERSION_ID),14.04)
 	DEB_DEPENDS += openjdk-8-jdk-headless
 else
@@ -49,8 +50,17 @@ endif
 RPM_DEPENDS_GROUPS = 'Development Tools'
 RPM_DEPENDS  = redhat-lsb glibc-static java-1.8.0-openjdk-devel yum-utils
 RPM_DEPENDS += openssl-devel https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm apr-devel
-RPM_DEPENDS += python-devel python-virtualenv lcov chrpath
-EPEL_DEPENDS = libconfuse-devel ganglia-devel
+RPM_DEPENDS += python-devel
+ifeq ($(OS_ID)),fedora)
+ifeq ($(OS_VERSION_ID),25)
+	RPM_DEPENDS += python2-virtualenv
+else
+	RPM_DEPENDS += python-virtualenv
+endif
+endif
+RPM_DEPENDS += lcov chrpath libffi-devel
+RPM_DEPENDS += https://kojipkgs.fedoraproject.org//packages/nasm/2.12.02/2.fc26/x86_64/nasm-2.12.02-2.fc26.x86_64.rpm
+EPEL_DEPENDS = libconfuse-devel ganglia-devel epel-rpm-macros
 
 ifneq ($(wildcard $(STARTUP_DIR)/startup.conf),)
         STARTUP_CONF ?= $(STARTUP_DIR)/startup.conf
@@ -141,6 +151,21 @@ ifeq ($(OS_ID),ubuntu)
 	  exit 1 ; \
 	fi ; \
 	exit 0
+else ifneq ("$(wildcard /etc/redhat-release)","")
+	@for i in $(RPM_DEPENDS) $(EPEL_DEPENDS) ; do \
+	    RPM=$$(basename -s .rpm "$${i##*/}" | cut -d- -f1,2,3)  ;	\
+	    if [[ "$$RPM" =~ "epel-release-latest" ]] ; then		\
+	        MISSING+=$$(rpm -q epel-release | grep "^package") ;	\
+	    else							\
+		MISSING+=$$(rpm -q $$RPM | grep "^package")	   ;    \
+	    fi							   ;    \
+	done							   ;	\
+	if [ -n "$$MISSING" ] ; then \
+	  echo "Please install missing RPMs: \n$$MISSING\n" ; \
+	  echo "by executing \"make install-dep\"\n" ; \
+	  exit 1 ; \
+	fi ; \
+	exit 0
 endif
 	@echo "SOURCE_PATH = $(WS_ROOT)"                   > $(BR)/build-config.mk
 	@echo "#!/bin/bash\n"                              > $(BR)/path_setup
@@ -220,6 +245,7 @@ export VPP_PYTHON_PREFIX=$(BR)/python
 define test
 	$(if $(filter-out $(3),retest),make -C $(BR) PLATFORM=$(1) TAG=$(2) vpp-install,)
 	make -C test \
+	  TEST_DIR=$(WS_ROOT)/test \
 	  VPP_TEST_BUILD_DIR=$(BR)/build-$(2)-native \
 	  VPP_TEST_BIN=$(BR)/install-$(2)-native/vpp/bin/vpp \
 	  VPP_TEST_PLUGIN_PATH=$(BR)/install-$(2)-native/vpp/lib64/vpp_plugins \
@@ -250,10 +276,10 @@ test-wipe:
 	@make -C test wipe
 
 test-shell: bootstrap
-	$(call test,vpp_lite,vpp_lite,shell)
+	$(call test,vpp,vpp,shell)
 
 test-shell-debug: bootstrap
-	$(call test,vpp_lite,vpp_lite_debug,shell)
+	$(call test,vpp,vpp_debug,shell)
 
 test-doc:
 	@make -C test doc
@@ -262,6 +288,7 @@ test-wipe-doc:
 	@make -C test wipe-doc
 
 test-cov: bootstrap
+	$(eval EXTENDED_TESTS=yes)
 	$(call test,vpp,vpp_gcov,cov)
 
 test-wipe-cov:

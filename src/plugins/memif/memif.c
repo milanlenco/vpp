@@ -38,10 +38,10 @@
 #define MEMIF_DEBUG 1
 
 #if MEMIF_DEBUG == 1
-  #define DEBUG_LOG(...) clib_warning(__VA_ARGS__)
-  #define DEBUG_UNIX_LOG(...) clib_unix_warning(__VA_ARGS__)
+#define DEBUG_LOG(...) clib_warning(__VA_ARGS__)
+#define DEBUG_UNIX_LOG(...) clib_unix_warning(__VA_ARGS__)
 #else
-  #define DEBUG_LOG(...)
+#define DEBUG_LOG(...)
 #endif
 
 memif_main_t memif_main;
@@ -57,8 +57,7 @@ memif_eth_flag_change (vnet_main_t * vnm, vnet_hw_interface_t * hi, u32 flags)
 }
 
 static void
-memif_remove_pending_conn (
-	memif_pending_conn_t * pending_conn)
+memif_remove_pending_conn (memif_pending_conn_t * pending_conn)
 {
   memif_main_t *mm = &memif_main;
 
@@ -86,7 +85,7 @@ memif_connect (vlib_main_t * vm, memif_if_t * mif)
 			       VNET_HW_INTERFACE_FLAG_LINK_UP);
 }
 
-static void
+void
 memif_disconnect (vlib_main_t * vm, memif_if_t * mif)
 {
   vnet_main_t *vnm = vnet_get_main ();
@@ -104,10 +103,9 @@ memif_disconnect (vlib_main_t * vm, memif_if_t * mif)
     }
   if (mif->connection.index != ~0)
     {
-      unix_file_del (&unix_main,
-		     unix_main.file_pool + mif->connection.index);
+      unix_file_del (&unix_main, unix_main.file_pool + mif->connection.index);
       mif->connection.index = ~0;
-      mif->connection.fd = -1;		/* closed in unix_file_del */
+      mif->connection.fd = -1;	/* closed in unix_file_del */
     }
 
   // TODO: properly munmap + close memif-owned shared memory segments
@@ -116,7 +114,7 @@ memif_disconnect (vlib_main_t * vm, memif_if_t * mif)
 
 static clib_error_t *
 memif_process_connect_req (memif_pending_conn_t * pending_conn,
-			   memif_msg_t * req, struct ucred * slave_cr,
+			   memif_msg_t * req, struct ucred *slave_cr,
 			   int shm_fd, int int_fd)
 {
   memif_main_t *mm = &memif_main;
@@ -239,11 +237,11 @@ memif_process_connect_req (memif_pending_conn_t * pending_conn,
   mif->interrupt_line.index = unix_file_add (&unix_main, &template);
 
   /* change context for future messages */
-  uf = vec_elt_at_index (unix_main.file_pool,
-			 pending_conn->connection.index);
+  uf = vec_elt_at_index (unix_main.file_pool, pending_conn->connection.index);
   uf->private_data = mif->if_index << 1;
   mif->connection = pending_conn->connection;
   pool_put (mm->pending_conns, pending_conn);
+  pending_conn = 0;
 
   memif_connect (vm, mif);
 
@@ -251,7 +249,22 @@ response:
   resp.version = MEMIF_VERSION;
   resp.type = MEMIF_MSG_TYPE_CONNECT_RESP;
   resp.retval = retval;
-  send (fd, &resp, sizeof (resp), 0);
+  if (send (fd, &resp, sizeof (resp), 0) < 0)
+    {
+      DEBUG_UNIX_LOG ("Failed to send connection response");
+      error = clib_error_return_unix (0, "send fd %d", fd);
+      if (pending_conn)
+	memif_remove_pending_conn (pending_conn);
+      else
+	memif_disconnect (vm, mif);
+    }
+  if (retval > 0)
+    {
+      if (shm_fd >= 0)
+	close (shm_fd);
+      if (int_fd >= 0)
+	close (int_fd);
+    }
   return error;
 }
 
@@ -287,9 +300,9 @@ memif_conn_fd_read_ready (unix_file_t * uf)
   vlib_main_t *vm = vlib_get_main ();
   memif_if_t *mif = 0;
   memif_pending_conn_t *pending_conn = 0;
-  int fd_array[2] = {-1, -1};
-  char ctl[CMSG_SPACE (sizeof (fd_array)) + CMSG_SPACE (sizeof (struct ucred))]
-    = { 0 };
+  int fd_array[2] = { -1, -1 };
+  char ctl[CMSG_SPACE (sizeof (fd_array)) +
+	   CMSG_SPACE (sizeof (struct ucred))] = { 0 };
   struct msghdr mh = { 0 };
   struct iovec iov[1];
   struct ucred *cr = 0;
@@ -308,7 +321,7 @@ memif_conn_fd_read_ready (unix_file_t * uf)
   /* grab the appropriate context */
   if (uf->private_data & 1)
     pending_conn = vec_elt_at_index (mm->pending_conns,
-					   uf->private_data >> 1);
+				     uf->private_data >> 1);
   else
     mif = vec_elt_at_index (mm->interfaces, uf->private_data >> 1);
 
@@ -439,8 +452,7 @@ memif_conn_fd_accept_ready (unix_file_t * uf)
   template.read_function = memif_conn_fd_read_ready;
   template.file_descriptor = conn_fd;
   template.private_data = (pending_conn->index << 1) | 1;
-  pending_conn->connection.index =
-	unix_file_add (&unix_main, &template);
+  pending_conn->connection.index = unix_file_add (&unix_main, &template);
 
   return 0;
 }
@@ -515,7 +527,8 @@ memif_connect_master (vlib_main_t * vm, memif_if_t * mif)
 	{
 	  u16 slot = i * (1 << mif->log2_ring_size) + j;
 	  ring->desc[j].region = 0;
-	  ring->desc[j].offset = buffer_offset + (slot * mif->buffer_size);
+	  ring->desc[j].offset =
+	    buffer_offset + (u32) (slot * mif->buffer_size);
 	  ring->desc[j].buffer_length = mif->buffer_size;
 	}
     }
@@ -528,7 +541,8 @@ memif_connect_master (vlib_main_t * vm, memif_if_t * mif)
 	  u16 slot =
 	    (i + mif->num_s2m_rings) * (1 << mif->log2_ring_size) + j;
 	  ring->desc[j].region = 0;
-	  ring->desc[j].offset = buffer_offset + (slot * mif->buffer_size);
+	  ring->desc[j].offset =
+	    buffer_offset + (u32) (slot * mif->buffer_size);
 	  ring->desc[j].buffer_length = mif->buffer_size;
 	}
     }
@@ -599,13 +613,19 @@ memif_process (vlib_main_t * vm, vlib_node_runtime_t * rt, vlib_frame_t * f)
   f64 start_time, last_run_duration = 0, now;
 
   sockfd = socket (AF_UNIX, SOCK_STREAM, 0);
+  if (sockfd < 0)
+    {
+      DEBUG_UNIX_LOG ("socket AF_UNIX");
+      return 0;
+    }
   sun.sun_family = AF_UNIX;
   template.read_function = memif_conn_fd_read_ready;
 
   while (1)
     {
       if (enabled)
-	vlib_process_wait_for_event_or_clock (vm, (f64)3 - last_run_duration);
+	vlib_process_wait_for_event_or_clock (vm,
+					      (f64) 3 - last_run_duration);
       else
 	vlib_process_wait_for_event (vm);
 
@@ -695,7 +715,7 @@ memif_close_if (memif_main_t * mm, memif_if_t * mif)
 
   memif_disconnect (vm, mif);
 
-  if (mif->listener_index != (uword)~0)
+  if (mif->listener_index != (uword) ~ 0)
     {
       listener = pool_elt_at_index (mm->listeners, mif->listener_index);
       if (--listener->usage_counter == 0)
@@ -719,11 +739,7 @@ memif_close_if (memif_main_t * mm, memif_if_t * mif)
 	}
     }
 
-  if (mif->lockp != 0)
-    {
-      clib_mem_free ((void *) mif->lockp);
-      mif->lockp = 0;
-    }
+  clib_spinlock_free (&mif->lockp);
 
   mhash_unset (&mm->if_index_by_key, &mif->key, &mif->if_index);
   vec_free (mif->socket_filename);
@@ -737,26 +753,28 @@ int
 memif_worker_thread_enable ()
 {
   /* if worker threads are enabled, switch to polling mode */
+  /* *INDENT-OFF* */
   foreach_vlib_main ((
 		       {
 		       vlib_node_set_state (this_vlib_main,
 					    memif_input_node.index,
 					    VLIB_NODE_STATE_POLLING);
 		       }));
-
+  /* *INDENT-ON* */
   return 0;
 }
 
 int
 memif_worker_thread_disable ()
 {
+  /* *INDENT-OFF* */
   foreach_vlib_main ((
 		       {
 		       vlib_node_set_state (this_vlib_main,
 					    memif_input_node.index,
 					    VLIB_NODE_STATE_INTERRUPT);
 		       }));
-
+  /* *INDENT-ON* */
   return 0;
 }
 
@@ -786,11 +804,7 @@ memif_create_if (vlib_main_t * vm, memif_create_if_args_t * args)
   mif->connection.fd = mif->interrupt_line.fd = -1;
 
   if (tm->n_vlib_mains > 1)
-    {
-      mif->lockp = clib_mem_alloc_aligned (CLIB_CACHE_LINE_BYTES,
-					   CLIB_CACHE_LINE_BYTES);
-      memset ((void *) mif->lockp, 0, CLIB_CACHE_LINE_BYTES);
-    }
+    clib_spinlock_init (&mif->lockp);
 
   if (!args->hw_addr_set)
     {
@@ -1035,6 +1049,7 @@ VLIB_INIT_FUNCTION (memif_init);
 /* *INDENT-OFF* */
 VLIB_PLUGIN_REGISTER () = {
     .version = VPP_BUILD_VER,
+    .description = "Packet Memory Interface (experimetal)",
 };
 /* *INDENT-ON* */
 

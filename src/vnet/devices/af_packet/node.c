@@ -124,7 +124,7 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   u32 frame_num = apif->rx_req->tp_frame_nr;
   u8 *block_start = apif->rx_ring + block * block_size;
   uword n_trace = vlib_get_trace_count (vm, node);
-  u32 cpu_index = os_get_cpu_number ();
+  u32 thread_index = vlib_get_thread_index ();
   u32 n_buffer_bytes = vlib_buffer_free_list_buffer_size (vm,
 							  VLIB_BUFFER_DEFAULT_FREE_LIST_INDEX);
   u32 min_bufs = apif->rx_req->tp_frame_size / n_buffer_bytes;
@@ -132,15 +132,15 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   if (apif->per_interface_next_index != ~0)
     next_index = apif->per_interface_next_index;
 
-  n_free_bufs = vec_len (apm->rx_buffers[cpu_index]);
+  n_free_bufs = vec_len (apm->rx_buffers[thread_index]);
   if (PREDICT_FALSE (n_free_bufs < VLIB_FRAME_SIZE))
     {
-      vec_validate (apm->rx_buffers[cpu_index],
+      vec_validate (apm->rx_buffers[thread_index],
 		    VLIB_FRAME_SIZE + n_free_bufs - 1);
       n_free_bufs +=
-	vlib_buffer_alloc (vm, &apm->rx_buffers[cpu_index][n_free_bufs],
+	vlib_buffer_alloc (vm, &apm->rx_buffers[thread_index][n_free_bufs],
 			   VLIB_FRAME_SIZE);
-      _vec_len (apm->rx_buffers[cpu_index]) = n_free_bufs;
+      _vec_len (apm->rx_buffers[thread_index]) = n_free_bufs;
     }
 
   rx_frame = apif->next_rx_frame;
@@ -163,11 +163,11 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 	    {
 	      /* grab free buffer */
 	      u32 last_empty_buffer =
-		vec_len (apm->rx_buffers[cpu_index]) - 1;
+		vec_len (apm->rx_buffers[thread_index]) - 1;
 	      prev_bi0 = bi0;
-	      bi0 = apm->rx_buffers[cpu_index][last_empty_buffer];
+	      bi0 = apm->rx_buffers[thread_index][last_empty_buffer];
 	      b0 = vlib_get_buffer (vm, bi0);
-	      _vec_len (apm->rx_buffers[cpu_index]) = last_empty_buffer;
+	      _vec_len (apm->rx_buffers[thread_index]) = last_empty_buffer;
 	      n_free_bufs--;
 
 	      /* copy data */
@@ -236,9 +236,9 @@ af_packet_device_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
   vlib_increment_combined_counter
     (vnet_get_main ()->interface_main.combined_sw_if_counters
      + VNET_INTERFACE_COUNTER_RX,
-     os_get_cpu_number (), apif->hw_if_index, n_rx_packets, n_rx_bytes);
+     vlib_get_thread_index (), apif->hw_if_index, n_rx_packets, n_rx_bytes);
 
-  vnet_device_increment_rx_packets (cpu_index, n_rx_packets);
+  vnet_device_increment_rx_packets (thread_index, n_rx_packets);
   return n_rx_packets;
 }
 
@@ -246,20 +246,18 @@ static uword
 af_packet_input_fn (vlib_main_t * vm, vlib_node_runtime_t * node,
 		    vlib_frame_t * frame)
 {
-  int i;
   u32 n_rx_packets = 0;
-  u32 cpu_index = os_get_cpu_number ();
   af_packet_main_t *apm = &af_packet_main;
-  af_packet_if_t *apif;
+  vnet_device_input_runtime_t *rt = (void *) node->runtime_data;
+  vnet_device_and_queue_t *dq;
 
-  for (i = 0; i < vec_len (apm->interfaces); i++)
-    {
-      apif = vec_elt_at_index (apm->interfaces, i);
-      if (apif->is_admin_up &&
-	  (i % apm->input_cpu_count) ==
-	  (cpu_index - apm->input_cpu_first_index))
-	n_rx_packets += af_packet_device_input_fn (vm, node, frame, apif);
-    }
+  vec_foreach (dq, rt->devices_and_queues)
+  {
+    af_packet_if_t *apif;
+    apif = vec_elt_at_index (apm->interfaces, dq->dev_instance);
+    if (apif->is_admin_up)
+      n_rx_packets += af_packet_device_input_fn (vm, node, frame, apif);
+  }
 
   return n_rx_packets;
 }
@@ -271,9 +269,6 @@ VLIB_REGISTER_NODE (af_packet_input_node) = {
   .sibling_of = "device-input",
   .format_trace = format_af_packet_input_trace,
   .type = VLIB_NODE_TYPE_INPUT,
-  /**
-   * default state is INTERRUPT mode, switch to POLLING if worker threads are enabled
-   */
   .state = VLIB_NODE_STATE_INTERRUPT,
   .n_errors = AF_PACKET_INPUT_N_ERROR,
   .error_strings = af_packet_input_error_strings,

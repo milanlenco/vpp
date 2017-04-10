@@ -107,15 +107,15 @@ VNET_FEATURE_ARC_INIT (mpls_input, static) =
   .arc_index_ptr = &mpls_main.input_feature_arc_index,
 };
 
-VNET_FEATURE_INIT (mpls_lookup, static) = {
-  .arc_name = "mpls-input",
-  .node_name = "mpls-lookup",
-  .runs_before = VNET_FEATURES ("mpls-not-enabled"),
-};
-
 VNET_FEATURE_INIT (mpls_not_enabled, static) = {
   .arc_name = "mpls-input",
   .node_name = "mpls-not-enabled",
+  .runs_before = VNET_FEATURES ("mpls-lookup"),
+};
+
+VNET_FEATURE_INIT (mpls_lookup, static) = {
+  .arc_name = "mpls-input",
+  .node_name = "mpls-lookup",
   .runs_before = VNET_FEATURES (0), /* not before any other features */
 };
 

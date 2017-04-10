@@ -23,6 +23,7 @@
 #include <vnet/fib/ip4_fib.h>
 #include <vnet/session/application.h>
 #include <vnet/tcp/tcp.h>
+#include <vnet/session/session_debug.h>
 
 /**
  * Per-type vector of transport protocol virtual function tables
@@ -555,7 +556,7 @@ session_manager_allocate_session_fifos (session_manager_main_t * smm,
 					u8 * added_a_segment)
 {
   svm_fifo_segment_private_t *fifo_segment;
-  u32 fifo_size, default_fifo_size = 128 << 10;	/* TODO config */
+  u32 fifo_size, default_fifo_size = 1 << 16;	/* TODO config */
   int i;
 
   *added_a_segment = 0;
@@ -803,39 +804,38 @@ stream_session_enqueue_notify (stream_session_t * s, u8 block)
   /* Get session's server */
   app = application_get (s->app_index);
 
-  /* Fabricate event */
-  evt.fifo = s->server_rx_fifo;
-  evt.event_type = FIFO_EVENT_SERVER_RX;
-  evt.event_id = serial_number++;
-  evt.enqueue_length = svm_fifo_max_dequeue (s->server_rx_fifo);
-
   /* Built-in server? Hand event to the callback... */
   if (app->cb_fns.builtin_server_rx_callback)
-    return app->cb_fns.builtin_server_rx_callback (s, &evt);
+    return app->cb_fns.builtin_server_rx_callback (s);
 
-  /* Add event to server's event queue */
-  q = app->event_queue;
-
-  /* Based on request block (or not) for lack of space */
-  if (block || PREDICT_TRUE (q->cursize < q->maxsize))
-    unix_shared_memory_queue_add (app->event_queue, (u8 *) & evt,
-				  0 /* do wait for mutex */ );
-  else
-    return -1;
-
-  if (1)
+  /* If no event, send one */
+  if (svm_fifo_set_event (s->server_rx_fifo))
     {
-      ELOG_TYPE_DECLARE (e) =
-      {
-      .format = "evt-enqueue: id %d length %d",.format_args = "i4i4",};
-      struct
-      {
-	u32 data[2];
-      } *ed;
-      ed = ELOG_DATA (&vlib_global_main.elog_main, e);
-      ed->data[0] = evt.event_id;
-      ed->data[1] = evt.enqueue_length;
+      /* Fabricate event */
+      evt.fifo = s->server_rx_fifo;
+      evt.event_type = FIFO_EVENT_SERVER_RX;
+      evt.event_id = serial_number++;
+
+      /* Add event to server's event queue */
+      q = app->event_queue;
+
+      /* Based on request block (or not) for lack of space */
+      if (block || PREDICT_TRUE (q->cursize < q->maxsize))
+	unix_shared_memory_queue_add (app->event_queue, (u8 *) & evt,
+				      0 /* do wait for mutex */ );
+      else
+	{
+	  clib_warning ("fifo full");
+	  return -1;
+	}
     }
+
+  /* *INDENT-OFF* */
+  SESSION_EVT_DBG(SESSION_EVT_ENQ, s, ({
+      ed->data[0] = evt.event_id;
+      ed->data[1] = svm_fifo_max_dequeue (s->server_rx_fifo);
+  }));
+  /* *INDENT-ON* */
 
   return 0;
 }
@@ -908,8 +908,7 @@ stream_session_start_listen (u32 server_index, ip46_address_t * ip, u16 port)
   s->app_index = srv->index;
 
   /* Transport bind/listen  */
-  tci = tp_vfts[srv->session_type].bind (smm->vlib_main, s->session_index, ip,
-					 port);
+  tci = tp_vfts[srv->session_type].bind (s->session_index, ip, port);
 
   /* Attach transport to session */
   s->connection_index = tci;
@@ -938,8 +937,7 @@ stream_session_stop_listen (u32 server_index)
   tc = tp_vfts[srv->session_type].get_listener (listener->connection_index);
   stream_session_table_del_for_tc (smm, listener->session_type, tc);
 
-  tp_vfts[srv->session_type].unbind (smm->vlib_main,
-				     listener->connection_index);
+  tp_vfts[srv->session_type].unbind (listener->connection_index);
   pool_put (smm->listen_sessions[srv->session_type], listener);
 }
 
@@ -1200,8 +1198,29 @@ stream_session_open (u8 sst, ip46_address_t * addr, u16 port_host_byte_order,
 void
 stream_session_disconnect (stream_session_t * s)
 {
+//  session_fifo_event_t evt;
+
   s->session_state = SESSION_STATE_CLOSED;
+  /* RPC to vpp evt queue in the right thread */
+
   tp_vfts[s->session_type].close (s->connection_index, s->thread_index);
+
+//  {
+//  /* Fabricate event */
+//  evt.fifo = s->server_rx_fifo;
+//  evt.event_type = FIFO_EVENT_SERVER_RX;
+//  evt.event_id = serial_number++;
+//
+//  /* Based on request block (or not) for lack of space */
+//  if (PREDICT_TRUE(q->cursize < q->maxsize))
+//    unix_shared_memory_queue_add (app->event_queue, (u8 *) &evt,
+//                                0 /* do wait for mutex */);
+//  else
+//    {
+//      clib_warning("fifo full");
+//      return -1;
+//    }
+//  }
 }
 
 /**
@@ -1235,7 +1254,7 @@ session_register_transport (u8 type, const transport_proto_vft_t * vft)
   tp_vfts[type] = *vft;
 
   /* If an offset function is provided, then peek instead of dequeue */
-  smm->session_rx_fns[type] =
+  smm->session_tx_fns[type] =
     (vft->tx_fifo_offset) ? session_tx_fifo_peek_and_snd :
     session_tx_fifo_dequeue_and_snd;
 }
@@ -1273,6 +1292,10 @@ session_manager_main_enable (vlib_main_t * vm)
   vec_validate (smm->evts_partially_read, num_threads - 1);
   vec_validate (smm->current_enqueue_epoch, num_threads - 1);
   vec_validate (smm->vpp_event_queues, num_threads - 1);
+
+#if SESSION_DBG
+  vec_validate (smm->last_event_poll_by_thread, num_threads - 1);
+#endif
 
   /* $$$$ preallocate hack config parameter */
   for (i = 0; i < 200000; i++)

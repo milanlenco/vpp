@@ -75,13 +75,7 @@ fib_entry_get_default_chain_type (const fib_entry_t *fib_entry)
 	return (FIB_FORW_CHAIN_TYPE_UNICAST_IP6);
     case FIB_PROTOCOL_MPLS:
 	if (MPLS_EOS == fib_entry->fe_prefix.fp_eos)
-	    /*
-	     * If the entry being asked is a eos-MPLS label entry,
-	     * then use the payload-protocol field, that we stashed there
-	     * for just this purpose
-	     */
-	    return (fib_forw_chain_type_from_dpo_proto(
-			fib_entry->fe_prefix.fp_payload_proto));
+	    return (FIB_FORW_CHAIN_TYPE_MPLS_EOS);
 	else
 	    return (FIB_FORW_CHAIN_TYPE_MPLS_NON_EOS);
     }
@@ -99,7 +93,6 @@ format_fib_entry (u8 * s, va_list * args)
     fib_entry_src_t *src;
     fib_node_index_t fei;
     fib_source_t source;
-    u32 n_covered;
     int level;
 
     fei = va_arg (*args, fib_node_index_t);
@@ -143,14 +136,6 @@ format_fib_entry (u8 * s, va_list * args)
 	    }
 	}));
     
-	n_covered = fib_entry_cover_get_size(fib_entry);
-	if (n_covered > 0) {
-	    s = format(s, "\n tracking %d covered: ", n_covered);
-	    s = fib_entry_cover_list_format(fib_entry, s);
-	}
-	s = fib_ae_import_format(fib_entry, s);
-	s = fib_ae_export_format(fib_entry, s);
-
 	s = format (s, "\n forwarding: ");
     }
     else
@@ -179,20 +164,17 @@ format_fib_entry (u8 * s, va_list * args)
             fib_entry_delegate_type_t fdt;
             fib_entry_delegate_t *fed;
 
-            FOR_EACH_DELEGATE_CHAIN(fib_entry, fdt, fed,
+            s = format (s, " Delegates:\n");
+            FOR_EACH_DELEGATE(fib_entry, fdt, fed,
             {
-                s = format(s, "  %U-chain\n  %U",
-                           format_fib_forw_chain_type,
-                           fib_entry_delegate_type_to_chain_type(fdt),
-                           format_dpo_id, &fed->fd_dpo, 2);
-                s = format(s, "\n");
+                s = format(s, "  %U\n", format_fib_entry_deletegate, fed);
             });
         }
     }
 
     if (level >= FIB_ENTRY_FORMAT_DETAIL2)
     {
-        s = format(s, "\nchildren:");
+        s = format(s, " Children:");
         s = fib_node_children_format(fib_entry->fe_node.fn_children, s);
     }
 
@@ -383,6 +365,35 @@ fib_entry_contribute_urpf (fib_node_index_t entry_index,
 }
 
 /*
+ * If the client is request a chain for multicast forwarding then swap
+ * the chain type to one that can provide such transport.
+ */
+static fib_forward_chain_type_t
+fib_entry_chain_type_mcast_to_ucast (fib_forward_chain_type_t fct)
+{
+    switch (fct)
+    {
+    case FIB_FORW_CHAIN_TYPE_MCAST_IP4:
+    case FIB_FORW_CHAIN_TYPE_MCAST_IP6:
+        /*
+         * we can only transport IP multicast packets if there is an
+         * LSP.
+         */
+        fct = FIB_FORW_CHAIN_TYPE_MPLS_EOS;
+        break;
+    case FIB_FORW_CHAIN_TYPE_MPLS_EOS:
+    case FIB_FORW_CHAIN_TYPE_UNICAST_IP4:
+    case FIB_FORW_CHAIN_TYPE_UNICAST_IP6:
+    case FIB_FORW_CHAIN_TYPE_MPLS_NON_EOS:
+    case FIB_FORW_CHAIN_TYPE_ETHERNET:
+    case FIB_FORW_CHAIN_TYPE_NSH:
+        break;
+    }
+
+    return (fct);
+}
+
+/*
  * fib_entry_contribute_forwarding
  *
  * Get an lock the forwarding information (DPO) contributed by the FIB entry.
@@ -396,6 +407,11 @@ fib_entry_contribute_forwarding (fib_node_index_t fib_entry_index,
     fib_entry_t *fib_entry;
 
     fib_entry = fib_entry_get(fib_entry_index);
+
+    /*
+     * mfib children ask for mcast chains. fix these to the appropriate ucast types.
+     */
+    fct = fib_entry_chain_type_mcast_to_ucast(fct);
 
     if (fct == fib_entry_get_default_chain_type(fib_entry))
     {
@@ -426,6 +442,11 @@ fib_entry_contribute_forwarding (fib_node_index_t fib_entry_index,
 
         dpo_copy(dpo, &fed->fd_dpo);
     }
+    /*
+     * don't allow the special index indicating replicate.vs.load-balance
+     * to escape to the clients
+     */
+    dpo->dpoi_index &= ~MPLS_IS_REPLICATE;
 }
 
 const dpo_id_t *
@@ -924,10 +945,10 @@ fib_entry_path_remove (fib_node_index_t fib_entry_index,
 		/*
 		 * no more sources left. this entry is toast.
 		 */
-		fib_entry_src_action_uninstall(fib_entry);
 		fib_entry = fib_entry_post_flag_update_actions(fib_entry,
                                                                source,
                                                                bflags);
+		fib_entry_src_action_uninstall(fib_entry);
 
 		return (FIB_ENTRY_SRC_FLAG_NONE);
 	    }
@@ -1014,10 +1035,10 @@ fib_entry_special_remove (fib_node_index_t fib_entry_index,
 		/*
 		 * no more sources left. this entry is toast.
 		 */
-		fib_entry_src_action_uninstall(fib_entry);
 		fib_entry = fib_entry_post_flag_update_actions(fib_entry,
                                                                source,
                                                                bflags);
+		fib_entry_src_action_uninstall(fib_entry);
 
 		return (FIB_ENTRY_SRC_FLAG_NONE);
 	    }
@@ -1337,6 +1358,36 @@ fib_entry_get_best_source (fib_node_index_t entry_index)
 
     bsrc = fib_entry_get_best_src_i(fib_entry);
     return (fib_entry_src_get_source(bsrc));
+}
+
+/**
+ * Return !0 is the entry is reoslved, i.e. will return a valid forwarding
+ * chain
+ */
+int
+fib_entry_is_resolved (fib_node_index_t fib_entry_index)
+{
+    fib_entry_delegate_t *fed;
+    fib_entry_t *fib_entry;
+
+    fib_entry = fib_entry_get(fib_entry_index);
+
+    fed = fib_entry_delegate_get(fib_entry, FIB_ENTRY_DELEGATE_BFD);
+
+    if (NULL == fed)
+    {
+        /*
+         * no BFD tracking - resolved
+         */
+        return (!0);
+    }
+    else
+    {
+        /*
+         * defer to the state of the BFD tracking
+         */
+        return (FIB_BFD_STATE_UP == fed->fd_bfd_state);
+    }
 }
 
 static int

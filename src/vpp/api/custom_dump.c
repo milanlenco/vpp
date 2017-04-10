@@ -200,7 +200,7 @@ static void *vl_api_sw_interface_set_vxlan_bypass_t_print
   s = format (s, "sw_if_index %d ", ntohl (mp->sw_if_index));
 
   if (mp->is_ipv6)
-    s = format (s, "ip6");
+    s = format (s, "ip6 ");
 
   if (mp->enable)
     s = format (s, "enable ");
@@ -260,12 +260,26 @@ static void *vl_api_bridge_domain_add_del_t_print
 
   if (mp->is_add)
     {
-      s = format (s, "flood %d uu-flood %d forward %d learn %d arp-term %d",
-		  mp->flood, mp->uu_flood, mp->forward, mp->learn,
-		  mp->arp_term);
+      s = format (s, "flood %d uu-flood %d ", mp->flood, mp->uu_flood);
+      s = format (s, "forward %d learn %d ", mp->forward, mp->learn);
+      s = format (s, "arp-term %d mac-age %d", mp->arp_term, mp->mac_age);
     }
   else
     s = format (s, "del ");
+
+  FINISH;
+}
+
+static void *vl_api_bridge_domain_set_mac_age_t_print
+  (vl_api_bridge_domain_set_mac_age_t * mp, void *handle)
+{
+  u8 *s;
+
+  s = format (0, "SCRIPT: bridge_domain_set_mac_age ");
+
+  s = format (s, "bd_id %d ", ntohl (mp->bd_id));
+
+  s = format (s, "mac-age %d", mp->mac_age);
 
   FINISH;
 }
@@ -280,6 +294,30 @@ static void *vl_api_bridge_domain_dump_t_print
 
   if (bd_id != ~0)
     s = format (s, "bd_id %d ", bd_id);
+
+  FINISH;
+}
+
+static void *vl_api_l2fib_flush_bd_t_print
+  (vl_api_l2fib_flush_bd_t * mp, void *handle)
+{
+  u8 *s;
+  u32 bd_id = ntohl (mp->bd_id);
+
+  s = format (0, "SCRIPT: l2fib_flush_bd ");
+  s = format (s, "bd_id %d ", bd_id);
+
+  FINISH;
+}
+
+static void *vl_api_l2fib_flush_int_t_print
+  (vl_api_l2fib_flush_int_t * mp, void *handle)
+{
+  u8 *s;
+  u32 sw_if_index = ntohl (mp->sw_if_index);
+
+  s = format (0, "SCRIPT: l2fib_flush_int ");
+  s = format (s, "sw_if_index %d ", sw_if_index);
 
   FINISH;
 }
@@ -792,7 +830,7 @@ static void *vl_api_dhcp_client_config_t_print
 
   s = format (s, "want_dhcp_event %d ", mp->want_dhcp_event);
 
-  s = format (s, "pid %d ", mp->pid);
+  s = format (s, "pid %d ", ntohl (mp->pid));
 
   if (mp->is_add == 0)
     s = format (s, "del ");
@@ -1384,10 +1422,8 @@ static void *vl_api_vxlan_add_del_tunnel_t_print
   u8 *s;
   s = format (0, "SCRIPT: vxlan_add_del_tunnel ");
 
-  ip46_address_t src, dst;
-
-  ip46_from_addr_buf (mp->is_ipv6, mp->dst_address, &dst);
-  ip46_from_addr_buf (mp->is_ipv6, mp->src_address, &src);
+  ip46_address_t src = to_ip46 (mp->is_ipv6, mp->src_address);
+  ip46_address_t dst = to_ip46 (mp->is_ipv6, mp->dst_address);
 
   u8 is_grp = ip46_address_is_multicast (&dst);
   char *dst_name = is_grp ? "group" : "dst";
@@ -1405,9 +1441,6 @@ static void *vl_api_vxlan_add_del_tunnel_t_print
   s = format (s, "decap-next %d ", ntohl (mp->decap_next_index));
 
   s = format (s, "vni %d ", ntohl (mp->vni));
-
-  if (mp->is_add == 0)
-    s = format (s, "del ");
 
   if (mp->is_add == 0)
     s = format (s, "del ");
@@ -1712,7 +1745,7 @@ static void *vl_api_want_ip4_arp_events_t_print
   u8 *s;
 
   s = format (0, "SCRIPT: want_ip4_arp_events ");
-  s = format (s, "pid %d address %U ", mp->pid,
+  s = format (s, "pid %d address %U ", ntohl (mp->pid),
 	      format_ip4_address, &mp->address);
   if (mp->enable_disable == 0)
     s = format (s, "del ");
@@ -1726,7 +1759,7 @@ static void *vl_api_want_ip6_nd_events_t_print
   u8 *s;
 
   s = format (0, "SCRIPT: want_ip6_nd_events ");
-  s = format (s, "pid %d address %U ", mp->pid,
+  s = format (s, "pid %d address %U ", ntohl (mp->pid),
 	      format_ip6_address, mp->address);
   if (mp->enable_disable == 0)
     s = format (s, "del ");
@@ -2946,6 +2979,8 @@ _(SR_POLICY_MOD, sr_policy_mod)                                         \
 _(SR_POLICY_DEL, sr_policy_del)                                         \
 _(SW_INTERFACE_SET_L2_XCONNECT, sw_interface_set_l2_xconnect)           \
 _(L2FIB_ADD_DEL, l2fib_add_del)                                         \
+_(L2FIB_FLUSH_BD, l2fib_flush_bd)                                       \
+_(L2FIB_FLUSH_INT, l2fib_flush_int)                                     \
 _(L2_FLAGS, l2_flags)                                                   \
 _(BRIDGE_FLAGS, bridge_flags)                                           \
 _(CLASSIFY_ADD_DEL_TABLE, classify_add_del_table)			\
@@ -2953,6 +2988,7 @@ _(CLASSIFY_ADD_DEL_SESSION, classify_add_del_session)			\
 _(SW_INTERFACE_SET_L2_BRIDGE, sw_interface_set_l2_bridge)		\
 _(BRIDGE_DOMAIN_ADD_DEL, bridge_domain_add_del)                         \
 _(BRIDGE_DOMAIN_DUMP, bridge_domain_dump)                               \
+_(BRIDGE_DOMAIN_SET_MAC_AGE, bridge_domain_set_mac_age)                 \
 _(CLASSIFY_SET_INTERFACE_IP_TABLE, classify_set_interface_ip_table)	\
 _(CLASSIFY_SET_INTERFACE_L2_TABLES, classify_set_interface_l2_tables)	\
 _(ADD_NODE_NEXT, add_node_next)						\
