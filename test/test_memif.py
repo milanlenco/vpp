@@ -178,7 +178,7 @@ class MEMIFTestCase_m(MEMIFTestCase):
 
 
 		memifs_index.append(MEMIFApi.create_memif(self.vpp2, 15, 'slave',
-			 '/tmp/vpp.sock'))
+			 '/tmp/vpp.sock', 512, 4096, 'aa:bb:cc:33:22:11'))
 		self.vpp2.logger.info("created memif sw_if_index: %d" % memifs_index[1])
         	
 		self.vpp2.vapi.sw_interface_add_del_address(
@@ -228,18 +228,23 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		print('Vpp1:')
 		print(self.vapi.ppcli("show int"))
 		print(self.vapi.ppcli("show int address"))
+		print(self.vapi.ppcli("show hardware"))
 		print('Vpp2:')
 		print(self.vpp2.vapi.ppcli("show int"))
 		print(self.vpp2.vapi.ppcli("show int address"))
+		print(self.vpp2.vapi.ppcli("show hardware"))
+		print(self.vpp2.vapi.ppcli("ping 192.168.1.1"))
 		packets = self.create_stream_vpp2(count)
 		self.vpp2.pg1.add_stream_vpp2(packets)
 		self.vpp2.pg1.enable_capture()
 		self.pg0.enable_capture()
 		self.vpp2.pg_start()
-		capture = self.pg0.get_capture(expected_count=(count))
+		print(self.vpp2.vapi.ppcli("show trace"))
+		capture = self.pg0.get_capture(expected_count=(count), timeout=10)
+		for p in capture:
+			p.show()
 		self.vpp2.pg1.assert_nothing_captured()
 		self.verify_capture_s_m(capture)
-		
 		MEMIFApi.delete_memif(self, memifs_index[0])
 		MEMIFApi.delete_memif(self.vpp2, memifs_index[1])		
 
@@ -250,32 +255,31 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		memifs_index = MEMIFTestCase_m.connect_memif(self)
 		
 		count = 5
-		#self.add_route()
+		self.add_route()
 		print('Vpp1:')
 		print(self.vapi.ppcli("show int"))
 		print(self.vapi.ppcli("show int address"))
+		print(self.vapi.ppcli("show hardware"))
 		print('Vpp2:')
 		print(self.vpp2.vapi.ppcli("show int"))
 		print(self.vpp2.vapi.ppcli("show int address"))
+		print(self.vpp2.vapi.ppcli("show hardware"))
 		packets = self.create_stream(count)
 		self.pg0.add_stream(packets)
-		self.sleep(5,"1")
 		self.vpp2.pg1.enable_capture()
-		self.sleep(5,"2")
 		self.pg0.enable_capture()
-		self.sleep(5, "3")
 		self.pg_start()
-		self.sleep(5, "4")
-		capture = self.vpp2.pg1.get_capture(expected_count=(count))
+		print(self.vapi.ppcli("show trace"))
+		capture = self.vpp2.pg1.get_capture(expected_count=(count), timeout=10)
 		if capture:
 			n_cap = []
 			for p in capture:
 				if isinstance(p, PicklablePacket):
 					p = p()
 					n_cap.append(p)
-			self.verify_capture_m_s(n_cap)
 		self.pg0.assert_nothing_captured()
-	
+		self.verify_capture_m_s(n_cap)
+		
 		MEMIFApi.delete_memif(self, memifs_index[0])
 		MEMIFApi.delete_memif(self.vpp2, memifs_index[1])		
 
