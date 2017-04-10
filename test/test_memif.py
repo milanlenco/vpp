@@ -267,13 +267,12 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		self.pg_start()
 		self.sleep(5, "4")
 		capture = self.vpp2.pg1.get_capture(expected_count=(count))
-		"""
-		n_cap = []
-		for p in capture:
-			if isinstance(p, PicklablePacket):
-				p = p()
-				n_cap.append(p)
-		"""
+		if capture:
+			n_cap = []
+			for p in capture:
+				if isinstance(p, PicklablePacket):
+					p = p()
+					n_cap.append(p)
 		self.pg0.assert_nothing_captured()
 		#self.verify_capture_m_s(n_cap)
 		
