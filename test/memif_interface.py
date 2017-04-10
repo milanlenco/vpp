@@ -177,14 +177,14 @@ class VppInterface(object):
                 "in interface dump %s" %
                 (self.sw_if_index, repr(r)))
 
-    def set_ip4(self, ip='172.16', mc='02', count=1):
+    def set_ip4(self, ip='172.16', count=1):
         self._remote_hosts = []
         self._hosts_by_mac = {}
         self._hosts_by_ip4 = {}
         self._hosts_by_ip6 = {}
         for i in range(
                 2, count + 2):  # 0: network address, 1: local vpp address
-            mac = mc + ":%02x:00:00:ff:%02x" % (self.sw_if_index, i)
+            mac = "02:%02x:00:00:ff:%02x" % (self.sw_if_index, i)
             ip4 = ip + ".%u.%u" % (self.sw_if_index, i)
             ip6 = "fd01:%x::%x" % (self.sw_if_index, i)
             host = Host(mac, ip4, ip6)
