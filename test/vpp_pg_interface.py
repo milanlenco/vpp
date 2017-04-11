@@ -118,9 +118,8 @@ class VppPGInterface(VppInterface):
                 self.test.logger.debug("Renaming %s->%s" %
                                        (self.out_path, name))
                 os.rename(self.out_path, name)
-		self.test.logger.debug("file removed")
         except:
-            self.test.logger.debug("some file excepton...")
+            pass
         # FIXME this should be an API, but no such exists atm
         self.test.vapi.cli(self.capture_cli)
         self._pcap_reader = None
