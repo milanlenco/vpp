@@ -349,7 +349,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 	def test_memif_traffic_01_slave_master(self):	
 		""" ICMP packet stream slave -> master """
 		memifs_index = self.connect_memif()
-		#temporary workaround until bug in memif is fixed
 		self.vpp2.vapi.cli("ping 192.168.1.1")
 		count = 5
 		self.add_route()
@@ -366,7 +365,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 	def test_memif_traffic_02_master_slave(self):
 		""" ICMP packet stream master -> slave """
 		memifs_index = self.connect_memif()	
-		#temporary workaround until bug in memif is fixed
 		self.vpp2.vapi.cli("ping 192.168.1.1")
 		count = 5
 		self.add_route()
@@ -392,7 +390,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		memifs_index = self.connect_memif_3ifs()
 		self.vpp3.set_request_timeout(10)
 		self.vpp2.set_request_tiomeout(10)
-		#temporary workaround until bug in memif is fixed
 		self.vpp2.vapi.cli('ping 192.168.1.1')
 		self.vpp3.vapi.cli('ping 192.168.2.1')
 
@@ -404,7 +401,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		count1 = 3
 		count2 = 2
 		self.start_pg([count1, count2])
-
 		capture = self.pg0.get_capture(expected_count=count1*2 + count2*2)
 		self.vpp2.pg1.assert_nothing_captured()
 		self.vpp3.pg1.assert_nothing_captured()
@@ -421,7 +417,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		if link_up_down:
 			retval = self.vapi.cli("ping 192.168.1.2").split('\n')[-2].split(' ')
 			self.assertNotEqual(int(retval[1]), 0)
-			#temprary workaround, first packet drops
 			self.assertTrue((int(retval[1]) == int(retval[3]))
 				or (int(retval[1]) == (int(retval[3]) + 1)))
 		else:
@@ -486,7 +481,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 		
 		retval = self.vpp2.vapi.cli("ping 192.168.1.1").split('\n')[-2].split(' ')
 		self.assertNotEqual(int(retval[1]), 0)
-		#temprary workaround, first packet drops
 		self.assertTrue((int(retval[1]) == int(retval[3]))
 			or (int(retval[1]) == (int(retval[3]) + 1)))
 		
@@ -496,32 +490,23 @@ class MEMIFTestCase_m(MEMIFTestCase):
 				'192.168.1.1'), 24, del_all=1)
 		self.sleep(4, "waiting for disconnection")
 		
-		#master = MEMIFApi.dump_memif(self, memifs_index[0])
-		#slave = MEMIFApi.dump_memif(self.vpp2, memifs_index[1])
 		
 		retval = self.vpp2.vapi.cli("ping 192.168.1.1").split('\n')[-2].split(' ')
 		self.assertNotEqual(int(retval[1]), 0)
 		self.assertEqual(int(retval[3]), 0)
 		
-		#self.assertEqual(master.link_up_down, 0)
-		#self.assertEqual(slave.link_up_down, 0)
 
 		self.vapi.sw_interface_add_del_address(
 			master.sw_if_index, socket.inet_pton(socket.AF_INET,
 				'192.168.1.1'), 24)
 		self.sleep(4, "waiting for connection")
 		
-		#master = MEMIFApi.dump_memif(self, memifs_index[0])
-		#slave = MEMIFApi.dump_memif(self.vpp2, memifs_index[1])
 
 		retval = self.vpp2.vapi.cli("ping 192.168.1.1").split('\n')[-2].split(' ')
 		self.assertNotEqual(int(retval[1]), 0)
-		#temprary workaround, first packet drops
 		self.assertTrue((int(retval[1]) == int(retval[3]))
 			or (int(retval[1]) == (int(retval[3]) + 1)))
 
-		#self.assertEqual(master.link_up_down, 1)
-		#self.assertEqual(slave.link_up_down, 1)
 
 		self.vpp2.vapi.sw_interface_add_del_address(
 		slave.sw_if_index, socket.inet_pton(socket.AF_INET,
@@ -539,7 +524,6 @@ class MEMIFTestCase_m(MEMIFTestCase):
 			
 		retval = self.vapi.cli("ping 192.168.1.2").split('\n')[-2].split(' ')
 		self.assertNotEqual(int(retval[1]), 0)
-		#temprary workaround, first packet drops
 		self.assertTrue((int(retval[1]) == int(retval[3]))
 			or (int(retval[1]) == (int(retval[3]) + 1)))
 
