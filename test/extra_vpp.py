@@ -324,7 +324,6 @@ class ExtraVpp(VppTestCase):
 	
     @classmethod
     def tearDownClass(cls):
-	print('exptra_vpp.py tear down class')
         super(ExtraVpp, cls).tearDownClass()
 
     @classmethod

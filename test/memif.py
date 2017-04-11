@@ -17,8 +17,7 @@ from vpp_pg_interface import VppPGInterface
 
 
 class MEMIF2(ExtraVpp):
-	
-
+	""" second vpp class """
 	@classmethod
 	def setUpClass(cls):
 		super(MEMIF2, cls).setUpClass()
@@ -42,15 +41,43 @@ class MEMIF2(ExtraVpp):
 			super(MEMIF2, cls).tearDownClass()
 			raise
 		
-
 	def tearDown(self):
-		print('memif.py MEMIF2 tear down')
 		super(MEMIF2, self).tearDown()
 		if not self.vpp_dead:
 			self.logger.info(self.vapi.cli("show interfaces address"))
 			self.logger.info(self.vapi.cli("show memif"))
 
 
+class MEMIF3(ExtraVpp):
+	""" third vpp class """
+	@classmethod
+	def setUpClass(cls):
+		super(MEMIF3, cls).setUpClass()
+		try:		
+			intf = VppPGInterface(cls, 1)
+			setattr(cls, intf.name, intf)
+			cls.pg_interfaces = [intf]
+			cls.create_loopback_interfaces([0])
+			cls.loopback0 = cls.lo_interfaces[0]
+			cls.loopback0.config_ip4()
+			cls.loopback0.admin_up()
+			for i in cls.pg_interfaces:
+				i.set_ip4('169.55','07')
+				i.config_ip4()
+				i.configure_ipv4_neighbors()
+				i.admin_up()
+				i.resolve_arp()
+			#cls.icmp_id = 6305			
+			
+		except Exception:
+			super(MEMIF3, cls).tearDownClass()
+			raise
+		
+	def tearDown(self):
+		super(MEMIF3, self).tearDown()
+		if not self.vpp_dead:
+			self.logger.info(self.vapi.cli("show interfaces address"))
+			self.logger.info(self.vapi.cli("show memif"))
 	
 	
 
@@ -119,6 +146,9 @@ class MEMIFTestCase(VppTestCase):
 		cls.vpp2 = RemoteClass(MEMIF2)
 		cls.vpp2.start_remote()
 		cls.vpp2.setUpClass()
+		cls.vpp3 = RemoteClass(MEMIF3)
+		cls.vpp3.start_remote()
+		cls.vpp3.setUpClass()
 		super(MEMIFTestCase, cls).setUpClass()
 		try:			
 			cls.create_pg_interfaces(range(1))
@@ -201,21 +231,28 @@ class MEMIFTestCase(VppTestCase):
 		Delete memory interface
 		"""
         	super(MEMIFTestCase, self).tearDown()
-		"""
         	if not self.vpp_dead:
         	    self.logger.info(self.vapi.cli("show interfaces address"))
         	    self.logger.info(self.vapi.cli("show memif"))
 		self.vpp2.tearDown()
+		self.vpp3.tearDown()
 		if not self.vpp_dead and not self.vpp2.vpp_dead.get_remote_value():
-			self.clear_memif_config()
-		"""
+			self.clear_memif_config(self)
+		if not self.vpp3.vpp_dead.get_remote_value():
+			for m in MEMIFApi.dump_memif(self.vpp3):
+				self.logger.info("Deleting memif sw_if_index: %d"
+					% m.sw_if_index)
+				MEMIFApi.delete_memif(self.vpp3, m.sw_if_index)
+				MEMIFApi.log_memif_config(self.vpp3)
 
 	@classmethod
 	def tearDownClass(cls):
-		print('memif.py vpp1 tear down class')
 		cls.vpp2.tearDownClass()
 		cls.vpp2.quit_remote()
 		cls.vpp2.join()
+		cls.vpp3.tearDownClass()
+		cls.vpp3.quit_remote()
+		cls.vpp3.join()
         	super(MEMIFTestCase, cls).tearDownClass()
 
 
