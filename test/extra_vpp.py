@@ -7,12 +7,19 @@ from multiprocessing import Process, Pipe
 from pickle import dumps, PicklingError
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.l2 import Ether, ARP
-from scapy.utils import rdpcap
 from scapy.plist import PacketList
 from framework import VppTestCase
 from vpp_pg_interface import VppPGInterface
-from picklable_packet import PicklablePacket
 
+class PicklablePacket:
+    def __init__(self, p):
+        self.bytes = bytes(p)
+        self.time = p.time
+
+    def __call__(self):
+        p = Ether(self.bytes)
+        p.time = self.time
+        return p
 
 class SerializableClassCopy(object):
     """
@@ -139,15 +146,9 @@ class RemoteClass(Process):
             if isinstance(val, RemoteClass) or isinstance(val, RemoteClassAttr):
                 kwargs[key] = val.get_remote_value()
         # send request
-	if args:
-		if type(args[0]) is list:
-			if type(args[0][0]) is Ether:
-				l = []
-				for p in args[0]:
-					l.append(PicklablePacket(p))
-				del args;
-				args = (l,);
-	self._pipe[RemoteClass.PIPE_PARENT].send((op, path, args, kwargs))
+        args = self._make_serializable(args)
+        kwargs = self._make_serializable(kwargs)
+        self._pipe[RemoteClass.PIPE_PARENT].send((op, path, args, kwargs))
         if not ret:
             # no return value expected
             return None
@@ -162,6 +163,7 @@ class RemoteClass(Process):
             return None
         try:
             rv = self._pipe[RemoteClass.PIPE_PARENT].recv()
+            rv = self._deserialize(rv)
             return rv
         except EOFError:
             return None
@@ -223,9 +225,11 @@ class RemoteClass(Process):
         Make a serializable copy of an object.
         Members which are difficult/impossible to serialize are stripped.
         """
+        if type(obj) is Ether:
+            return PicklablePacket(obj)
         if self._serializable(obj):
             return obj # already serializable
-        copy = SerializableClassCopy()
+	copy = SerializableClassCopy()
         # copy at least serializable attributes and properties
         for name, member in inspect.getmembers(obj):
             if name[0] == '_': # skip private members
@@ -244,17 +248,30 @@ class RemoteClass(Process):
         """
         if (type(obj) is list) or (type(obj) is tuple) or (type(obj) is PacketList):
             rv = []
-	    if (type(obj) is PacketList):
-	        for p in obj:
-		    rv.append(PicklablePacket(p))
-	    else:
-                for item in obj:
-                    rv.append(self._make_serializable(item))
-                if type(obj) is tuple:
-                    rv = tuple(rv)
+            for item in obj:
+                rv.append(self._make_serializable(item))
+            if type(obj) is tuple:
+                rv = tuple(rv)
             return rv
         else:
             return self._make_obj_serializable(obj)
+
+    def _deserialize_obj(self, obj):
+        if isinstance(obj, PicklablePacket):
+            return obj()
+        return obj
+
+    def _deserialize(self, obj):
+        if (type(obj) is list) or (type(obj) is tuple) or (type(obj) is PacketList):
+            rv = []
+            for item in obj:
+                rv.append(self._deserialize(item))
+            if type(obj) is tuple:
+                rv = tuple(rv)
+            return rv
+        else:
+            return self._deserialize_obj(obj)
+    
 
     def start_remote(self):
         """ Start remote execution """
@@ -283,6 +300,8 @@ class RemoteClass(Process):
                 rv = None
                 # get request from the parent process
                 (op, path, args, kwargs) = self._pipe[RemoteClass.PIPE_CHILD].recv()
+                args = self._deserialize(args)
+                kwargs = self._deserialize(kwargs)
                 path = path.split('.') if path else []
                 if op == RemoteClass.GET:
                     rv = self._get_local_value(path)
@@ -349,3 +368,4 @@ class ExtraVpp(VppTestCase):
         """
         self._testMethodName = name
 	self._testMethodDoc = doc
+

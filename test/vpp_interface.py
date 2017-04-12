@@ -177,15 +177,17 @@ class VppInterface(object):
                 "in interface dump %s" %
                 (self.sw_if_index, repr(r)))
 
-    def set_ip4(self, ip='172.16', mc='02', count=1):
+
+
+    def set_ip4(self, net_prefix='172.16', count=1):
         self._remote_hosts = []
         self._hosts_by_mac = {}
         self._hosts_by_ip4 = {}
         self._hosts_by_ip6 = {}
         for i in range(
                 2, count + 2):  # 0: network address, 1: local vpp address
-            mac = mc + ":%02x:00:00:ff:%02x" % (self.sw_if_index, i)
-            ip4 = ip + ".%u.%u" % (self.sw_if_index, i)
+            mac = "02:%02x:00:00:ff:%02x" % (self.sw_if_index, i)
+            ip4 = net_prefix + ".%u.%u" % (self.sw_if_index, i)
             ip6 = "fd01:%x::%x" % (self.sw_if_index, i)
             host = Host(mac, ip4, ip6)
             self._remote_hosts.append(host)
@@ -193,12 +195,12 @@ class VppInterface(object):
             self._hosts_by_ip4[ip4] = host
             self._hosts_by_ip6[ip6] = host
 	
-	self._local_ip4 = ip + ".%u.1" % self.sw_if_index
+	self._local_ip4 = net_prefix + ".%u.1" % self.sw_if_index
         self._local_ip4n = socket.inet_pton(socket.AF_INET, self.local_ip4)
         self.local_ip4_prefix_len = 24
         self.has_ip4_config = False
         self.ip4_table_id = 0
-
+    
     def config_ip4(self):
         """Configure IPv4 address on the VPP interface."""
         self.test.vapi.sw_interface_add_del_address(
