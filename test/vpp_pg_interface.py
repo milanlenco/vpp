@@ -15,7 +15,6 @@ from util import ppp, ppc
 from scapy.utils6 import in6_getnsma, in6_getnsmac, in6_ismaddr
 from scapy.utils import inet_pton, inet_ntop
 
-import picklable_packet
 
 class CaptureTimeoutError(Exception):
     """ Exception raised if capture or packet doesn't appear within timeout """
@@ -148,38 +147,9 @@ class VppPGInterface(VppInterface):
         self.test.register_capture(self.cap_name)
         # FIXME this should be an API, but no such exists atm
         self.test.vapi.cli(self.input_cli)
-    
-    def add_stream_vpp2(self, pkts):
-        """
-        Add a stream of packets to this packet-generator
-
-        :param pkts: iterable packets
-
-        """
-	n_p = []
-	for p in pkts:
-		n_p.append(p())
-	pkts = n_p
-        try:
-            if os.path.isfile(self.in_path):
-                name = "%s/history.[timestamp:%f].[%s-counter:%04d].%s" %\
-                    (self.test.tempdir,
-                     time.time(),
-                     self.name,
-                     self.in_history_counter,
-                     self._in_file)
-                self.test.logger.debug("Renaming %s->%s" %
-                                       (self.in_path, name))
-                os.rename(self.in_path, name)
-        except:
-            pass
-        wrpcap(self.in_path, pkts)
-        self.test.register_capture(self.cap_name)
-        # FIXME this should be an API, but no such exists atm
-        self.test.vapi.cli(self.input_cli)
 
     def generate_debug_aid(self, kind):
-        """ Create a hardlink to the out file with a counter and a file
+        """  hardlink to the out file with a counter and a file
         containing stack trace to ease debugging in case of multiple capture
         files present. """
         self.test.logger.debug("Generating debug aid for %s on %s" %
@@ -195,7 +165,7 @@ class VppPGInterface(VppInterface):
         self._out_assert_counter += 1
 
     def _get_capture(self, timeout, filter_out_fn=is_ipv6_misc):
-        """ Helper method to get capture and filter it """	
+        """ Helper method to get capture and filter it """
         try:
             if not self.wait_for_capture_file(timeout):
                 return None
