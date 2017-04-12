@@ -355,7 +355,7 @@ memif_conn_fd_read_ready (unix_file_t * uf)
 	  else if (cmsg->cmsg_level == SOL_SOCKET
 		   && cmsg->cmsg_type == SCM_RIGHTS)
 	    {
-	      clib_memcpy (fd_array, CMSG_DATA (cmsg), sizeof (fd_array));
+	      clib_memcpy (fd_array, CMSG_DATA (cmsg), sizeof (fd_array)*2);
 	    }
 	  cmsg = CMSG_NXTHDR (&mh, cmsg);
 	}
